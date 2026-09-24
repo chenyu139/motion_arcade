@@ -93,18 +93,49 @@ int main(int argc, char *argv[]) {
         char script[PATH_MAX];
         snprintf(py, sizeof(py), "%s/.venv/bin/python", dir);
         snprintf(script, sizeof(script), "%s/main.py", dir);
+
+        /* 附加参数：.app 没法在 Finder 里带参数启动，所以从项目目录下的
+         * run_args.txt 读（一行一个参数）。诊断/演示时很方便：
+         *     echo --probe > run_args.txt && open MotionArcade.app
+         * 文件不存在或为空都等于"没有附加参数"。 */
+        static char extra[8][256];
+        int nextra = 0;
+        char args_path[PATH_MAX];
+        snprintf(args_path, sizeof(args_path), "%s/run_args.txt", dir);
+        FILE *af = fopen(args_path, "r");
+        if (af) {
+            while (nextra < 8 && fgets(extra[nextra], sizeof(extra[0]), af)) {
+                char *nl = strchr(extra[nextra], '\n');
+                if (nl) *nl = '\0';
+                if (extra[nextra][0] != '\0') nextra++;
+            }
+            fclose(af);
+            printf("[launcher] run_args.txt：%d 个附加参数\n", nextra);
+            fflush(stdout);
+        }
+
+        static char *eargv[12];
+        int n = 0;
+        eargv[n++] = py;
+        eargv[n++] = script;
+        for (int i = 0; i < nextra && n < 10; i++) eargv[n++] = extra[i];
+        eargv[n] = NULL;
+
         if (access(py, X_OK) != 0) {
-            snprintf(py, sizeof(py), "/usr/bin/env");
-            char *eargv[] = {"python3", script, NULL};
             printf("[launcher] 未找到 .venv，回退系统 python3\n");
             fflush(stdout);
-            execvp("python3", eargv);
+            static char *fallback[12];
+            fallback[0] = "python3";
+            fallback[1] = script;
+            int m = 2;
+            for (int i = 0; i < nextra && m < 10; i++) fallback[m++] = extra[i];
+            fallback[m] = NULL;
+            execvp("python3", fallback);
             perror("[launcher] exec python3 失败");
             return 1;
         }
-        printf("[launcher] 启动：%s %s\n", py, script);
+        printf("[launcher] 启动：%s %s（附加 %d 参）\n", py, script, nextra);
         fflush(stdout);
-        char *eargv[] = {py, script, NULL};
         execv(py, eargv);
         perror("[launcher] exec python 失败");
         return 1;

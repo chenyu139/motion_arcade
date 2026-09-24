@@ -43,7 +43,13 @@ class FaceState:
 
 @dataclass
 class HandState:
-    """一帧单只手的结果。坐标为镜像后的归一化值。"""
+    """
+    一帧单只手的结果（兼容层）。
+
+    这是给"只关心掌心 + 张合度"的老游戏用的简化结构；
+    新游戏建议直接用 core.vision.HandFrame（21 个关键点、捏合、伸出手指数、指向）。
+    HandState.pose 就是那只手的 HandFrame，需要精细手势时取它。
+    """
     found: bool = False
     x: float = 0.5             # 掌心 x（0 左 → 1 右）
     y: float = 0.5             # 掌心 y（0 上 → 1 下）
@@ -55,6 +61,7 @@ class HandState:
     bbox: Optional[Tuple[int, int, int, int]] = None
     contour: Optional[object] = None   # 调试用：原始轮廓点
     palm_r: float = 0.0        # 掌心内切圆半径（归一化）
+    pose: Optional[object] = None      # core.vision.HandFrame（有的话）
 
 
 @dataclass
@@ -104,6 +111,21 @@ class GameInput:
     release: bool = False
     grab_hold: bool = False
 
+    # ── 全身（来自 core.vision.PoseFrame，需要身体入镜）─────────────
+    #  这些量都已经过"中性位校准 + 身体尺度归一"，所以对不同身高、
+    #  不同远近的人都直接可用，游戏里不用再做换算。
+    body_found: bool = False
+    body_x: float = 0.0        # 身体横向偏移 -1(左) ~ +1(右)
+    crouch: float = 0.0        # 下蹲 0(站直) ~ 1(蹲到底)
+    arm_l: float = 0.0         # 左手举起 0~1（手腕高出肩膀的相对量）
+    arm_r: float = 0.0
+    arm_l_ext: float = 0.0     # 左臂伸展 0(弯曲) ~ 1(伸直)
+    arm_r_ext: float = 0.0
+    hands_up: int = 0          # 举起了几只手
+    lean: float = 0.0          # 躯干侧倾 -1~1
+    lb_visible: bool = False   # 下半身是否入镜（决定能否做踢腿/跳跃玩法）
+    pose: object = None        # 原始 PoseFrame，想自己算几何时用
+
     # 屏幕映射辅助：把归一化手部坐标映射到设计坐标系
     def hand_screen(self, w: float, h: float, invert_y: bool = False):
         y = (1.0 - self.hy) if invert_y else self.hy
@@ -148,14 +170,15 @@ class HeadController:
         self.calibrating = True
         self.progress = 0.0
 
-    def update(self, st: FaceState) -> None:
+    def update(self, st: FaceState, dt: float) -> None:
         C = self.cfg
         self.found = st.found
         if not st.found:
-            self.axis *= 0.6
-            self.up *= 0.8
-            self.head_y *= 0.8
-            self.yaw *= 0.8
+            k = 1.0 - math.exp(-dt / 0.14)
+            self.axis += k * (0.0 - self.axis)
+            self.up *= (1.0 - k)
+            self.head_y *= (1.0 - k)
+            self.yaw *= (1.0 - k)
             self.jump = False
             return
 
@@ -173,12 +196,14 @@ class HeadController:
 
         ncx, ncy = self.neutral  # type: ignore[misc]
         raw = _deadzone(st.cx - ncx, C.DEADZONE_X, C.FULL_SCALE_X)
-        self.axis += C.SMOOTH * (raw - self.axis)
+        # 基于时间的平滑：帧率变化时跟随手感保持一致（见 config 里的说明）
+        k = 1.0 - math.exp(-dt / max(1e-3, C.HEAD_TAU))
+        self.axis += k * (raw - self.axis)
 
         up_raw = ncy - st.cy                      # 正值 = 抬头
         self.up = max(0.0, min(1.0, up_raw / 0.28))
         self.head_y = max(-1.0, min(1.0, up_raw / 0.22))
-        self.yaw += 0.22 * (max(-1.0, min(1.0, st.yaw)) - self.yaw)
+        self.yaw += (1.0 - math.exp(-dt / 0.10)) * (max(-1.0, min(1.0, st.yaw)) - self.yaw)
         # 张嘴或抬头都算"动作键"
         self.jump = (up_raw > C.JUMP_DY) or (st.mouth_open > C.MOUTH_OPEN_THRESHOLD)
 
@@ -213,6 +238,7 @@ class HandController:
         self.lost_t = 99.0
         self._closed_frames = 0
         self._was_closed = False
+        self._pinch_fired = False
         self.pinch = False
         self.release = False
 
@@ -227,11 +253,13 @@ class HandController:
                 self.seen = False
             self._was_closed = False
             self._closed_frames = 0
+            self._pinch_fired = False
             return
 
         self.lost_t = 0.0
         h = max(hands, key=lambda z: z.area)
-        k = C.HAND_SMOOTH
+        # 基于时间的平滑：帧率变化时跟随手感保持一致
+        k = 1.0 - math.exp(-dt / max(1e-3, C.SMOOTH_TAU))
         self.sx += k * (h.x - self.sx)
         self.sy += k * (h.y - self.sy)
         self.sopen += k * (h.open - self.sopen)
@@ -240,14 +268,20 @@ class HandController:
         closed = self.sopen < C.HAND_CLOSE_THRESHOLD
         if closed:
             self._closed_frames += 1
-            if self._closed_frames == 2 and not self._was_closed:
+            # 用独立的 _pinch_fired 记录"本次收拢是否已经触发过"。
+            # 之前用 _was_closed 判断，而它在前一帧就被置 True 了，
+            # 导致 `_closed_frames == 2 and not _was_closed` 永远为假 —— pin
+            # 一次都不会触发。
+            if self._closed_frames >= 2 and not self._pinch_fired:
                 self.pinch = True
+                self._pinch_fired = True
             self._was_closed = True
         else:
             self._closed_frames = 0
             if self._was_closed and self.sopen > C.HAND_OPEN_THRESHOLD:
                 self.release = True
                 self._was_closed = False
+            self._pinch_fired = False
 
     @property
     def grab_hold(self) -> bool:
@@ -289,4 +323,96 @@ class NullController:
         return GameInput()
 
     def apply(self, inp: GameInput, hands=None) -> GameInput:
+        return inp
+
+
+# =========================================================================== #
+# 全身 → 控制量
+# =========================================================================== #
+class BodyController:
+    """
+    把 COCO-17 骨骼翻译成体感游戏的语义量。
+
+    三件关键的事：
+      1) **中性位校准**：启动时记录你正常坐姿的身体中心，之后所有横向位移
+         都相对它计算，站着/坐着都能用。
+      2) **身体尺度归一**：所有位移除以肩宽（或肩髋距），
+         这样离摄像头远近、个子高矮都不会改变手感。
+      3) **时间常数平滑**：与头部一致，帧率变化不影响跟随速度。
+    """
+
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+        self.reset()
+
+    def reset(self) -> None:
+        self._samples: List[float] = []
+        self.neutral_x: Optional[float] = None
+        self.body_x = 0.0
+        self.crouch = 0.0
+        self.arm_l = self.arm_r = 0.0
+        self.arm_l_ext = self.arm_r_ext = 0.0
+        self.lean = 0.0
+        self.hands_up = 0
+        self.found = False
+        self.lb_visible = False
+        self.calibrating = True
+        self.progress = 0.0
+
+    def update(self, pose, dt: float) -> None:
+        C = self.cfg
+        ok = pose is not None and getattr(pose, "found", False)
+        self.found = bool(ok)
+        if not ok:
+            k = 1.0 - math.exp(-dt / 0.18)
+            self.body_x += k * (0.0 - self.body_x)
+            self.arm_l += k * (0.0 - self.arm_l)
+            self.arm_r += k * (0.0 - self.arm_r)
+            self.crouch += k * (0.0 - self.crouch)
+            self.lean += k * (0.0 - self.lean)
+            self.hands_up = 0
+            return
+
+        center = pose.body_center
+        scale = max(0.06, pose.scale)
+        self.lb_visible = pose.lower_body_visible()
+
+        if self.calibrating:
+            if center.ok:
+                self._samples.append(center.x)
+                self.progress = min(1.0, len(self._samples) / C.CALIB_FRAMES)
+                if len(self._samples) >= C.CALIB_FRAMES:
+                    xs = sorted(self._samples)
+                    self.neutral_x = xs[len(xs) // 2]
+                    self.calibrating = False
+            return
+
+        nx = self.neutral_x if self.neutral_x is not None else 0.5
+        # 横向位移：以肩宽为单位，死区 0.25 个肩宽 → 满速 1.1 个肩宽
+        raw = _deadzone((center.x - nx) / scale, 0.25, 1.10)
+        k = 1.0 - math.exp(-dt / max(1e-3, C.BODY_TAU))
+        self.body_x += k * (raw - self.body_x)
+
+        # 姿态量：直接平滑跟随（它们本身已经做了尺度归一）
+        kc = 1.0 - math.exp(-dt / 0.12)
+        self.crouch += kc * (pose.crouch - self.crouch)
+        self.lean += kc * (max(-1.5, min(1.5, pose.torso_lean)) - self.lean)
+        self.arm_l += kc * (pose.arm_raised("left") - self.arm_l)
+        self.arm_r += kc * (pose.arm_raised("right") - self.arm_r)
+        self.arm_l_ext += kc * (pose.arm_extended("left") - self.arm_l_ext)
+        self.arm_r_ext += kc * (pose.arm_extended("right") - self.arm_r_ext)
+        self.hands_up = pose.hands_up()
+
+    def apply(self, inp: GameInput, pose) -> GameInput:
+        inp.pose = pose
+        inp.body_found = self.found
+        inp.body_x = self.body_x
+        inp.crouch = self.crouch
+        inp.arm_l = self.arm_l
+        inp.arm_r = self.arm_r
+        inp.arm_l_ext = self.arm_l_ext
+        inp.arm_r_ext = self.arm_r_ext
+        inp.hands_up = self.hands_up
+        inp.lean = self.lean
+        inp.lb_visible = self.lb_visible
         return inp

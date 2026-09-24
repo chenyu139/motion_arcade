@@ -38,6 +38,7 @@ import cv2
 import numpy as np
 
 from .inputs import FaceState, HandState
+from .vision import VisionFrame
 from . import config as C
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -334,9 +335,12 @@ class HandBackendSkin:
         angle = 0.0
         if len(cnt) >= 5:
             try:
-                _, _, ang = cv2.fitEllipse(cnt)[1]
-                angle = float(np.radians(ang))
-            except cv2.error:
+                # fitEllipse 返回 ((cx,cy), ((MA),(ma)), angle) —— 角度是第 3 项。
+                # 之前误写成 [1]（那是 (size, angle) 二元组），解包就抛 ValueError；
+                # 而外层只 catch 了 cv2.error，于是异常一路上抛被采集线程吞掉，
+                # 结果是"只要画面里出现任何肤色候选，手部结果就永远是空"。
+                angle = float(np.radians(cv2.fitEllipse(cnt)[2]))
+            except Exception:                                    # noqa: BLE001
                 angle = 0.0
 
         return HandState(
@@ -357,16 +361,36 @@ class HandBackendSkin:
 # 采集 + 检测
 # =========================================================================== #
 class MotionTracker:
-    """摄像头采集线程：输出最新一帧 + 人脸结果 + 手部结果。"""
+    """
+    摄像头采集线程。
 
-    def __init__(self, cam_index: int = C.CAM_INDEX, prefer_mediapipe: bool = False,
-                 hands: bool = True) -> None:
+    分工（这是本项目视觉方案的最终形态）：
+      · **头部主信号**：OpenCV YuNet 人脸检测，每帧跑（约 2ms）。
+        它只依赖"看到脸"，用户只露个头也能稳定工作 —— 比人体姿态模型更耐用。
+      · **全身 + 手部**：core.vision 的 AutoEngine（macOS 上就是 Apple Vision），
+        每 vision_every 帧跑一次。给出 COCO-17 骨骼与手部 21 关键点。
+      · 两者结果合并成统一的 VisionFrame + 兼容旧接口的 FaceState / HandState。
+
+    为什么不全用人体姿态做头部：VNDetectHumanBodyPoseRequest 需要看到足够多的
+    身体部位才会出结果，坐在桌前只露头肩时容易整帧丢失；
+    而 YuNet 只要一张脸。用 YuNet 保底、Vision 增强，手感最稳。
+    """
+
+    def __init__(self, cam_index: int = C.CAM_INDEX, prefer: str = None,
+                 hands: bool = True, vision_every: int = None) -> None:
         self.ok = False
         self.err = ""
         self.backend_name = "-"
         self.hand_name = "-"
         self._face = None
-        self._hand = None
+        self._engine = None
+        self._use_yunet = False
+        self._vision_every = max(1, int(vision_every or C.VISION_EVERY))
+        self._base_interval = self._vision_every
+        self._vision_interval = self._base_interval
+        self._vision_mode = "full"        # off / hand / body / full，由 shell 按游戏切换
+        self._miss_streak = 0
+        self._prefer = prefer
         self._cap = None
         self._thread = None
         self._running = False
@@ -374,32 +398,38 @@ class MotionTracker:
         self._frame: Optional[np.ndarray] = None
         self._state = FaceState()
         self._hands: List[HandState] = []
+        self._vision = VisionFrame()
         self._fps = 0.0
         self._hand_ms = 0.0
+        self._face_ms = 0.0
+        self._vision_ms = 0.0
+        self._frame_i = 0
+        self._stats = {"pose": 0, "hand": 0, "n": 0}
 
-        if prefer_mediapipe and mediapipe_usable():
-            try:
-                self._face = FaceBackendMediaPipe()
-            except Exception as e:                                  # noqa: BLE001
-                print(f"[tracker] MediaPipe 不可用，回退：{e}")
-        if self._face is None:
+        # ---- 视觉引擎（自动按平台选后端）----
+        try:
+            from .vision import AutoEngine
+            self._engine = AutoEngine(prefer=prefer, max_hands=C.HAND_MAX_NUM,
+                                      body=True, hands=hands)
+            self.hand_name = self._engine.name
+            # opencv 后端内部已经含人脸检测，不要再叠一层 YuNet
+            self._use_yunet = self._engine.name != "opencv"
+        except Exception as e:                                      # noqa: BLE001
+            print(f"[tracker] 视觉引擎初始化失败：{e}")
+            self._use_yunet = True
+
+        # ---- YuNet（头部主信号）----
+        if self._use_yunet:
             for factory in (FaceBackendYuNet, FaceBackendHaar):
                 try:
                     self._face = factory()
                     break
                 except Exception as e:                              # noqa: BLE001
                     print(f"[tracker] {factory.__name__} 不可用：{e}")
-        if self._face is None:
-            self.err = "没有可用的人脸检测后端（缺少模型文件）"
+        if self._face is None and self._engine is None:
+            self.err = "没有可用的视觉后端"
             return
-        self.backend_name = self._face.name
-
-        if hands:
-            try:
-                self._hand = HandBackendSkin()
-                self.hand_name = self._hand.name
-            except Exception as e:                                  # noqa: BLE001
-                print(f"[tracker] 手部后端不可用：{e}")
+        self.backend_name = self._face.name if self._face else self._engine.name
 
         if not self._open_camera(cam_index):
             self.err = f"无法打开摄像头（索引 {cam_index}）。请检查授权或被占用。"
@@ -442,23 +472,60 @@ class MotionTracker:
             frame = cv2.flip(frame, 1)                      # 镜像：头/手往右 → 画面往右
             if frame.shape[1] != C.CAM_W or frame.shape[0] != C.CAM_H:
                 frame = cv2.resize(frame, (C.CAM_W, C.CAM_H))
-
             small = cv2.resize(frame, (C.DETECT_W, det_h))
-            try:
-                st = self._face.detect(small, C.DETECT_W, det_h)
-            except Exception:                                # noqa: BLE001
-                st = FaceState(found=False)
-            st.backend = self.backend_name
 
-            hands: List[HandState] = []
-            if self._hand is not None:
+            # ---- 1) 头部主信号：YuNet 每帧跑，只露头也能稳（约 2ms）----
+            st = FaceState(found=False)
+            if self._face is not None:
                 t0 = time.time()
                 try:
-                    hands = self._hand.detect(small, st.box if st.found else None,
-                                              C.DETECT_W, det_h)
-                except Exception:                            # noqa: BLE001
-                    hands = []
-                self._hand_ms = (time.time() - t0) * 1000.0
+                    st = self._face.detect(small, C.DETECT_W, det_h)
+                except Exception:                                # noqa: BLE001
+                    st = FaceState(found=False)
+                self._face_ms += 0.25 * (((time.time() - t0) * 1000.0) - self._face_ms)
+                st.backend = self.backend_name
+
+            # ---- 2) 全身 + 手部：按需 + 自适应降频 ----
+            #  真机实测：Vision 在**真实图像**上要 16~29ms（实验室用空白图测是 8ms），
+            #  而 YuNet 人脸要 7~8ms。两个加起来就把采集线程压到 21~30fps 且抖动，
+            #  头部控制的手感就是这么被拖坏的。
+            #  所以策略是：
+            #    · 按当前游戏的需要决定跑不跑（头部游戏完全不用跑）；
+            #    · 连续检测不到目标时逐步拉长间隔（坐着只露头的人不会白白烧 CPU）；
+            #    · 一旦检测到就立刻恢复高频。
+            self._frame_i += 1
+            vf = self._vision
+            if self._engine is not None and self._vision_mode != "off" and \
+                    self._frame_i % self._vision_interval == 0:
+                t0 = time.time()
+                vf = self._engine.infer(small)
+                ms = (time.time() - t0) * 1000.0
+                self._vision_ms += 0.25 * (ms - self._vision_ms)
+                got = vf.pose.found or bool(vf.hands)
+                if got:
+                    self._miss_streak = 0
+                    self._vision_interval = max(1, self._base_interval)
+                else:
+                    self._miss_streak += 1
+                    if self._miss_streak > 4:
+                        # 连续 5 次没东西 → 退避，最多 1/12 帧
+                        self._vision_interval = min(12, self._vision_interval + 1)
+                self._stats["pose"] += 1 if vf.pose.found else 0
+                self._stats["hand"] += len(vf.hands)
+                self._stats["n"] += 1
+                with self._lock:
+                    self._vision = vf
+
+            # ---- 3) 合并：YuNet 定头部，Vision 补朝向与全身 ----
+            if st.found and vf.pose.found:
+                st.yaw = vf.pose.head_yaw
+                st.pitch = vf.pose.head_pitch
+                st.roll = vf.pose.head_roll
+            elif not st.found and vf.pose.found:
+                st = self._face_from_pose(vf.pose, C.DETECT_W, det_h,
+                                          self.backend_name + "+" + vf.source)
+
+            hands = [self._hand_state(h) for h in vf.hands]
 
             with self._lock:
                 self._frame = frame
@@ -473,10 +540,76 @@ class MotionTracker:
             avg = sum(dt_hist) / max(1, len(dt_hist))
             self._fps = 1.0 / avg if avg > 0 else 0.0
 
+    # ------------------------------------------------------------------ 转换
+    @staticmethod
+    def _face_from_pose(pose, w: int, h: int, backend: str) -> FaceState:
+        """人体姿态的头部 → 兼容的 FaceState（YuNet 丢失时的兜底）。"""
+        head = pose.head
+        le, re = pose.get("left_eye"), pose.get("right_eye")
+        ww = abs(re.x - le.x) if (le.ok and re.ok) else 0.14
+        hh = ww * 1.32
+        return FaceState(found=True, cx=head.x, cy=head.y, w=ww, h=hh,
+                         yaw=pose.head_yaw, pitch=pose.head_pitch, roll=pose.head_roll,
+                         box=(int((head.x - ww / 2) * w), int((head.y - hh / 2) * h),
+                              int(ww * w), int(hh * h)),
+                         nose=(head.x * w, head.y * h), backend=backend)
+
+    @staticmethod
+    def _hand_state(hf) -> HandState:
+        """HandFrame（21 点）→ 兼容的 HandState。"""
+        c = hf.center
+        return HandState(found=True, x=c.x, y=c.y, open=hf.openness,
+                         fingers=hf.extended_count,
+                         span=hf.palm_width, pose=hf)
+
     # ---------- 对外 ----------
     def get(self):
         with self._lock:
             return self._frame, self._state, list(self._hands)
+
+    def get_vision(self) -> VisionFrame:
+        """取最新一帧的全身骨骼 + 手部关键点。"""
+        with self._lock:
+            return self._vision
+
+    # ------------------------------------------------------------------ 模式
+    def set_vision_mode(self, mode: str) -> None:
+        """
+        按当前游戏切换视觉负载：
+
+            off   不跑（纯头部游戏）—— 省下全部的 Vision 开销
+            hand  只跑手部
+            body  只跑人体
+            full  人体 + 手部（体感游戏）
+
+        这是"加了手之后头部反而变钝"的根治办法：
+        玩马里奥的时候根本不需要跑手部检测，就别跑。
+        """
+        self._vision_mode = mode
+        self._miss_streak = 0
+        self._vision_interval = max(1, self._base_interval)
+        want = {"off": (False, False), "hand": (False, True),
+                "body": (True, False), "full": (True, True)}.get(mode)
+        if want is None or self._engine is None:
+            return
+        cur = getattr(self._engine, "_mod_names", None)
+        if cur != (mode,):
+            try:
+                # 重建引擎以换掉请求集合（请求对象是绑定在引擎里的）
+                from .vision import AutoEngine
+                self._engine.close()
+                self._engine = AutoEngine(prefer=self._prefer, max_hands=C.HAND_MAX_NUM,
+                                          body=want[0], hands=want[1])
+                self._engine._mod_names = (mode,)
+            except Exception as e:                                  # noqa: BLE001
+                print(f"[tracker] 切换视觉模式失败：{e}")
+
+    def _want_body(self) -> bool:
+        return self._vision_mode in ("body", "full")
+
+    @property
+    def vision_mode(self) -> str:
+        return self._vision_mode
 
     @property
     def fps(self) -> float:
@@ -485,6 +618,18 @@ class MotionTracker:
     @property
     def hand_ms(self) -> float:
         return self._hand_ms
+
+    @property
+    def timings(self) -> dict:
+        """各环节耗时（毫秒），排查性能问题时用。"""
+        n = max(1, self._stats["n"])
+        return {
+            "face": self._face_ms,
+            "vision": self._vision_ms,
+            "fps": self._fps,
+            "pose_rate": self._stats["pose"] / n,
+            "hands_rate": self._stats["hand"] / n,
+        }
 
     def close(self) -> None:
         self._running = False

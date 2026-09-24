@@ -36,14 +36,16 @@ from . import base as B
 from . import config as C
 from . import icons
 from . import theme as U
-from .inputs import FaceState, GameInput, HandController, HandState, HeadController
+from .inputs import (BodyController, FaceState, GameInput, HandController, HandState,
+                     HeadController)
 from .menu import Menu
+from .vision import COCO17_EDGES, HAND_EDGES
 
 ZERO = GameInput()
 
 
 class Shell:
-    def __init__(self, backend: str = "auto", cam_index: int = C.CAM_INDEX,
+    def __init__(self, vision: str = "auto", cam_index: int = C.CAM_INDEX,
                  no_cam: bool = False, windowed: bool = False,
                  start_game: str = "menu") -> None:
         pygame.init()
@@ -60,9 +62,10 @@ class Shell:
         if not no_cam:
             from .tracker import MotionTracker
             t0 = time.time()
-            self.tracker = MotionTracker(cam_index, prefer_mediapipe=(backend == "mediapipe"))
-            print(f"[shell] 人脸后端：{self.tracker.backend_name}　"
-                  f"手部后端：{self.tracker.hand_name}　"
+            prefer = None if vision in ("auto", "", None) else vision
+            self.tracker = MotionTracker(cam_index, prefer=prefer)
+            print(f"[shell] 视觉后端：{self.tracker.backend_name}"
+                  f"（手部/全身：{self.tracker.hand_name}）　"
                   f"初始化 {time.time() - t0:.1f}s")
             if not self.tracker.ok:
                 self.tracker_err = self.tracker.err
@@ -71,6 +74,7 @@ class Shell:
         cam_ok = bool(self.tracker and self.tracker.ok)
         self.head_ctl = HeadController(C)
         self.hand_ctl = HandController(C)
+        self.body_ctl = BodyController(C)
         self.menu = Menu({
             "cam_ok": cam_ok,
             "hand_ok": cam_ok,
@@ -95,6 +99,7 @@ class Shell:
         self.toast = ""
         self._prev_frame = None
         self._hands: List[HandState] = []
+        self._vision = None
         self._mouse_hand = (0.5, 0.5)
         print(f"[shell] 已就绪：{C.DESIGN_W}x{C.DESIGN_H}　显示模式 {self.display_mode}　"
               f"共 {len(self.games)} 款游戏")
@@ -260,9 +265,31 @@ class Shell:
         self.lost_t = 0.0
         self.fade = 1.0
         self.menu.reset()
+        self._apply_vision_mode(cls)
         need = getattr(cls, "REQUIRES", ("head",))
-        tip = " · ".join({"head": "头部", "hand": "手掌"}.get(x, x) for x in need)
+        tip = " · ".join({"head": "头部", "hand": "手掌", "body": "身体"}.get(x, x)
+                         for x in need)
         self.toast_msg(U.T(f"进入「{cls.TITLE}」　用{tip}操作", f"{cls.TITLE}"))
+
+    def _apply_vision_mode(self, cls) -> None:
+        """
+        按游戏需要开关视觉负载 —— 这是"加了手之后头部变钝"的根治办法。
+
+        真机实测 Vision 在真实图像上要 16~29ms/次，十几个纯头部游戏根本
+        不需要它，白白跑就是在抢采集线程的时间。
+        """
+        if not (self.tracker and self.tracker.ok):
+            return
+        req = set(getattr(cls, "REQUIRES", ("head",)))
+        if "body" in req:
+            mode = "full"
+        elif "hand" in req:
+            mode = "hand"
+        else:
+            mode = "off"
+        if mode != self.tracker.vision_mode:
+            self.tracker.set_vision_mode(mode)
+            print(f"[shell] 视觉负载 → {mode}（{cls.TITLE}）")
 
     def back_to_menu(self) -> None:
         self.scene = "menu"
@@ -271,6 +298,9 @@ class Shell:
         self.paused = False
         self.menu.reset()
         self.fade = 0.7
+        # 大厅要显示手部状态，只开手部就够
+        if self.tracker and self.tracker.ok:
+            self.tracker.set_vision_mode("hand")
 
     def toast_msg(self, msg: str) -> None:
         self.toast = msg
@@ -287,12 +317,16 @@ class Shell:
         cam_ok = bool(self.tracker and self.tracker.ok)
         if cam_ok:
             frame, st, hands = self.tracker.get()
+            vf = self.tracker.get_vision()
             self._prev_frame = frame
             self._hands = hands
-            self.head_ctl.update(st)
+            self._vision = vf
+            self.head_ctl.update(st, dt)
             self.hand_ctl.update(hands, dt)
+            self.body_ctl.update(vf.pose, dt)
             inp = self.head_ctl.game_input()
             inp = self.hand_ctl.apply(inp, hands)
+            inp = self.body_ctl.apply(inp, vf.pose)
         else:
             inp = GameInput()
             # 无摄像头：用鼠标模拟手（左键 = 握拳/捏合），保证游戏仍可演示
@@ -304,6 +338,14 @@ class Shell:
                                    area=0.05, span=0.2)]
             inp.grab_hold = pressed
             inp.pinch = pressed
+            # 键盘同时模拟身体动作：A/D 横移，S 蹲，W 举手
+            k2 = pygame.key.get_pressed()
+            inp.body_found = True
+            inp.body_x = (1 if (k2[pygame.K_d] or k2[pygame.K_RIGHT]) else 0) - \
+                         (1 if (k2[pygame.K_a] or k2[pygame.K_LEFT]) else 0)
+            inp.crouch = 1.0 if k2[pygame.K_DOWN] else 0.0
+            inp.arm_l = inp.arm_r = 1.0 if k2[pygame.K_w] else 0.0
+            inp.hands_up = 2 if k2[pygame.K_w] else 0
 
         if k_axis or k_action:
             inp.axis = float(k_axis)
@@ -409,15 +451,41 @@ class Shell:
             if st.nose:
                 pygame.draw.circle(panel, (250, 120, 110),
                                    (int(st.nose[0] * sx), int(st.nose[1] * sy)), 4)
-            # 手部
+            # 手部：画出 21 点骨架（这才是"精度"最直观的证据）
             for h in hands:
-                hx, hy = h.x * pw, h.y * ph
                 col = (150, 240, 200) if h.open > 0.5 else (250, 180, 130)
+                hf = getattr(h, "pose", None)
+                if hf is not None and len(hf.joints) >= 8:
+                    for a, b in HAND_EDGES:
+                        pa, pb = hf.get(a), hf.get(b)
+                        if pa.ok and pb.ok:
+                            pygame.draw.line(panel, col,
+                                             (pa.x * pw, pa.y * ph), (pb.x * pw, pb.y * ph), 2)
+                    for jn in hf.joints.values():
+                        if jn.ok:
+                            pygame.draw.circle(panel, (255, 255, 255),
+                                               (int(jn.x * pw), int(jn.y * ph)), 2)
+                    hx, hy = hf.center.x * pw, hf.center.y * ph
+                else:
+                    hx, hy = h.x * pw, h.y * ph
                 U.aa_circle(panel, (hx, hy), 30, (col[0], col[1], col[2], 130), 3, ss=2)
                 U.aa_circle(panel, (hx, hy), 6, col, 0, ss=2)
                 if h.bbox:
                     bx, by, bw, bh = h.bbox
                     pygame.draw.rect(panel, col, (bx * sx, by * sy, bw * sx, bh * sy), 2)
+            # 人体骨架
+            vf = self._vision
+            if vf is not None and vf.pose.found:
+                vcol = (120, 220, 255)
+                for a, b in COCO17_EDGES:
+                    pa, pb = vf.pose.get(a), vf.pose.get(b)
+                    if pa.ok and pb.ok:
+                        pygame.draw.line(panel, vcol,
+                                         (pa.x * pw, pa.y * ph), (pb.x * pw, pb.y * ph), 2)
+                for jn in vf.pose.joints.values():
+                    if jn.ok:
+                        pygame.draw.circle(panel, (255, 240, 170),
+                                           (int(jn.x * pw), int(jn.y * ph)), 3)
             # 中性位与死区
             if self.head_ctl.neutral:
                 ncx, ncy = self.head_ctl.neutral
