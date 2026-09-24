@@ -24,6 +24,7 @@ open MotionArcade.app        # 全屏启动，进入游戏大厅
 - [视觉架构（跨平台）](#视觉架构跨平台)
 - [操作方式](#操作方式)
 - [全身体感怎么用](#全身体感怎么用)
+- [生成式原创素材](#生成式原创素材)
 - [显示与分辨率](#显示与分辨率)
 - [工程结构](#工程结构)
 - [性能](#性能)
@@ -330,6 +331,76 @@ spr = A.figure_cached(220, style, pose)      # 带姿态量化的缓存，热路
 A.draw_figure(surf, spr, x, foot_y)          # 按脚底对齐贴图
 ```
 
+### 生成式原创素材
+
+程序化矢量负责"能画的东西"，但角色、文物这类需要造型精度的对象，位图效果更好。
+`assets/sprites/` 下有 **12 张生成式原创素材**，全部是四川文旅主题：
+
+| 素材 | 用途 |
+|---|---|
+| `panda_hero` / `panda_cub` | 大厅吉祥物（熊猫 + 蜀绣马褂） |
+| `panda_curl` | 熊猫滚滚主角（蜷成球，跟着滚动量旋转） |
+| `mask_red/black/gold/blue/green` | 川剧变脸的 5 张脸谱 |
+| `lantern` | 自贡灯会的灯笼（一张素材派生 6 种配色） |
+| `bronze_tree` / `sanxingdui` | 熊猫滚滚的隧道尽头、高陶俑镶嵌 |
+| `gaiwan` | 大厅的盖碗茶 |
+
+**为什么不用素材站的图**
+
+素材站上"免费"的图多数只授权个人使用，商用要单独买。这个项目要嵌进四川观察
+客户端，直接扒图等于把风险埋在后面。生成式素材是自己产出的，没有第三方权利
+负担；风格也能统一到与矢量美术同一套语言（cel-shading + 粗描边），不会出现
+"照片贴进矢量画面"的割裂感。
+
+原始生成图留在 `assets/sprites/_raw/`（JPEG 存证，3.8MB），`tools/matte.py`
+可以从它重新产出全部精灵。
+
+**抠底不是简单阈值**
+
+生成图是浅色背景的 RGB（**没有 alpha 通道**，即使请求了透明背景），必须自己抠。
+难点在于：**主体内部也有大量近白色区域** —— 熊猫的白毛、盖碗的青白瓷、脸谱的
+白色纹样。按"亮 = 背景"抠，这些部位会被抠穿成一个个空洞。
+
+正确做法见 `tools/matte.py`，核心三步：
+
+```
+1. 四边估背景色 → 低分辨率 inpaint 插值出「背景色场」
+   （有些图的背景是渐变的，单一常数色抠不干净）
+2. 距离够近的算"疑似背景"，再做连通域分析 ——
+   只有与画布边缘相连的那一片才是真背景
+   ↑ 关键一步：内部白毛颜色与背景一样，但被粗描边封闭、与画布边缘不连通，
+     因此会被正确保留（实测内部空洞率 0.00%）
+3. 二值前景 + 只在轮廓处羽化 1~2px
+```
+
+另有两处收尾：反混合去掉边缘白边（否则精灵贴到深色游戏背景上会有一圈白晕）、
+按 alpha 包围盒裁边并降采样到 600px。
+
+```bash
+.venv/bin/python tools/matte.py            # 重新抠底全部素材
+.venv/bin/python tools/matte.py --sheet    # 附带一张深底 / 棋盘底的检查图
+```
+
+**素材缺失不会崩**
+
+`core/sprites.py` 的 `draw()` 取不到图时返回 `False`，调用方据此回退到原来的
+矢量画法：
+
+```python
+if SP.draw(surf, "panda_curl", x, cy, height=r * 2.2, anchor="center",
+           rot=-math.degrees(self.roll)):
+    return                        # 用上了素材
+surf.blit(A.shade_ball(r, ...))   # 没有素材就走老路
+```
+
+所以仓库即使不带 `assets/sprites/` 也能跑 —— 素材是"增强"而不是"依赖"。
+
+**一张素材派生多种配色**
+
+自贡灯会要 6 盏颜色不同的灯，素材只有一张。用 `BLEND_RGB_MULT` 染色不行：
+多颜色相乘必然掉亮度，红灯笼乘绿直接变黑。所以 `sprites.hued()` 做的是真正的
+色相旋转（RGB 色相旋转矩阵，numpy 一次算完并按角度缓存）。
+
 ---
 
 ## 显示与分辨率
@@ -364,19 +435,23 @@ motion_arcade/
 │   ├── config.py           全部可调参数集中在此（分辨率/映射/各游戏数值）
 │   ├── theme.py            基础视觉工具箱：渐变、抗锯齿图元、光晕、粒子、模糊、缓存烘焙
 │   ├── art.py              高清美术库：卡通着色的球/人物/看台/草坪/球场
+│   ├── sprites.py          生成素材精灵层：加载 / 缩放缓存 / 锚点贴图 / 色相旋转
+│   ├── sichuan.py          10 个四川地标的程序化剪影 + 天际线组合
 │   ├── icons.py            20 个矢量图标（大厅卡片用）
 │   ├── inputs.py           FaceState / HandState / GameInput + 头部与手部控制器
 │   ├── tracker.py          摄像头采集线程 + 人脸后端 + 手部后端
+│   ├── vision/             跨平台视觉层：COCO-17 + 手部 21 点规范与多后端
 │   ├── base.py             游戏基类（特效、计时、HUD、结算、手部光标辅助）
-│   ├── menu.py             20 款游戏的分页卡片大厅
+│   ├── menu.py             20 款游戏的分页卡片大厅（含吉祥物）
 │   └── shell.py            显示模式、场景路由、HUD、预览、覆盖层
 │
 ├── games/                  20 款游戏，每款一个文件，继承 BaseGame
 │   └── __init__.py         导入即注册
 │
 ├── assets/models/          人脸检测模型（YuNet / Haar / MediaPipe）
+├── assets/sprites/         12 张生成式原创素材（_raw/ 为原始生成图）
 ├── packaging/              launcher.m + Info.plist + build_app.sh
-├── tools/                  无头测试工具（截图 / 性能 / 假玩家）
+├── tools/                  无头测试工具（截图 / 性能 / 假玩家 / 抠底）
 └── screenshots/            各游戏与大屏截图
 ```
 
@@ -506,6 +581,16 @@ F0000 graph_service.h:139] Check failed: service_ Service is unavailable.
   入口处 `sys.stdout.reconfigure(line_buffering=True)` 改成行缓冲。
   同理，`launcher.m` 里 stdout / stderr 要用**各自独立**的文件描述符，
   两个 `freopen(..., "w")` 会互相覆盖。
+- **`surfarray.blit_array()` 会把透明通道一起写成不透明**。给精灵做色相旋转时
+  用它写回 RGB，结果每个灯笼背后都多出一个黑矩形。改用 `surfarray.pixels3d()`
+  拿到**视图**后原地写入，只改 RGB、alpha 原样保留。
+- **抠底不要用"距离越近越透明"的宽软过渡**。AI 生成的背景自带细噪点，距离会在
+  10~40 之间波动，而软过渡的容差区间（9~46）正好把整片背景拉成 20~40% 不透明度的
+  灰雾 —— 表现为主体边缘外一圈脏边、而且包围盒裁不掉。二值前景 + 只在轮廓处
+  羽化 1~2px 才是对的。
+- **`Rect.bottom` / `top` / `left` / `right` 是标量，不是点**。
+  `surface.get_rect(bottom=(x, y))` 会抛 `invalid rect assignment`。
+  想要"底部中心对齐"要用 `midbottom`。
 
 ---
 

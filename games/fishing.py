@@ -78,8 +78,9 @@ class FishingGame(BaseGame):
         s.blit(U.vgrad3(W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238)), (0, 0))
         rng = random.Random(5)
         # 都江堰 / 乐山大佛 / 三星堆 —— 岷江两岸的四川地标
-        self._bg.blit(SC.skyline(W, 230, preset="culture", base=(86, 108, 122),
-                                 haze=0.48, seed=4, count=5), (0, WATER_Y - 230))
+        # 注意这里必须画到局部变量 s 上：_make_bg 还没返回，self._bg 尚不存在
+        s.blit(SC.skyline(W, 230, preset="culture", base=(86, 108, 122),
+                          haze=0.48, seed=4, count=5), (0, WATER_Y - 230))
         # 远山
         for _ in range(6):
             x = rng.uniform(-120, W)

@@ -18,6 +18,7 @@ from typing import List, Optional
 import pygame
 
 from core import art as A
+from core import sprites as SP
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput
@@ -219,6 +220,7 @@ class PandaRollGame(BaseGame):
     def draw(self, surf: pygame.Surface) -> None:
         surf.blit(self._bg, (0, 0))
         self._draw_tunnel(surf)
+        self._draw_landmark(surf)
         # 由远及近绘制
         for it in sorted(self.items, key=lambda d: -d["z"]):
             self._draw_item(surf, it)
@@ -228,6 +230,20 @@ class PandaRollGame(BaseGame):
         self.particles.draw(surf)
         self._draw_gauges(surf)
         self.draw_msg(surf)
+
+    def _draw_landmark(self, surf):
+        """
+        隧道尽头的三星堆青铜神树 —— 让"一直往前跑"有个视觉目标。
+
+        只用一张静态精灵：位置固定在消失点，靠 items 由远及近的绘制顺序自然
+        产生遮挡关系，不需要额外的 z 排序。素材缺失时什么都不画。
+        """
+        y_far, _ = project(1.0)
+        cx = self.W / 2.0
+        if SP.draw(surf, "bronze_tree", cx, int(y_far) + 14, height=200,
+                   anchor="bottom", alpha=238):
+            surf.blit(U.glow_surface(200, (130, 226, 198), 50, 8),
+                      (int(cx - 200), int(y_far - 70)))
 
     def _draw_tunnel(self, surf):
         """实心路面 + 移动的横向速度条带 + 两侧管壁，比同心环更像"跑道"。"""
@@ -295,20 +311,26 @@ class PandaRollGame(BaseGame):
         else:
             h = (130 if it["kind"] == "low" else 232) * sc
             w = 158 * sc
+            tall = it["kind"] == "tall"
             if w >= 4:
                 surf.blit(U.panel(w, h, (152, 128, 90), 10),
                           (int(x - w / 2), int(y - h)))
-                # 陶俑纹样：竖向刻线 + 圆孔眼
+                # 陶俑纹样：竖向刻线 +（矮柱才有）圆孔眼
                 if sc > 0.22:
                     for k in range(4):
                         surf.fill((114, 92, 62),
                                   (int(x - w * 0.36), int(y - h * (0.80 - k * 0.17)),
                                    int(w * 0.72), max(1, int(5 * sc))))
-                    U.aa_circle(surf, (x, y - h * 0.66), 13 * sc, (56, 44, 34), 0, ss=2)
-                    U.aa_circle(surf, (x, y - h * 0.66), 6 * sc, (198, 176, 140), 0, ss=2)
+                    if not tall:
+                        U.aa_circle(surf, (x, y - h * 0.66), 13 * sc, (56, 44, 34), 0, ss=2)
+                        U.aa_circle(surf, (x, y - h * 0.66), 6 * sc, (198, 176, 140), 0, ss=2)
                 # 顶部高光
                 surf.fill((196, 172, 132), (int(x - w * 0.46), int(y - h), int(w * 0.92),
                                             max(1, int(6 * sc))))
+                # 高柱镶三星堆纵目面具 —— 本作就是三星堆主题，用素材点题
+                if tall:
+                    SP.draw(surf, "sanxingdui", x, y - h * 0.68,
+                            width=w * 1.08, anchor="center", alpha=248)
             surf.blit(U.glow_surface(int(70 * sc) + 8, (255, 160, 120), 56, 6),
                       (int(x - 46 * sc), int(y - h * 0.5 - 40 * sc)))
 
@@ -324,6 +346,13 @@ class PandaRollGame(BaseGame):
         # 阴影
         U.aa_ellipse(surf, (int(x - r * 0.9), int(y - r * 0.22), int(r * 1.8), int(r * 0.44)),
                      (0, 0, 0, 110), 0, ss=2)
+        # 主体：优先用生成素材（蜷成球的熊猫），旋转角跟着滚动量走
+        if SP.draw(surf, "panda_curl", x, cy, height=r * 2.2, anchor="center",
+                   rot=-math.degrees(self.roll)):
+            surf.blit(U.glow_surface(int(r * 2.2), (150, 240, 210), 42, 7),
+                      (int(x - r * 1.1), int(cy - r * 1.1)))
+            return
+        # 回退：原来的矢量画法（白球 + 耳朵 + 眼罩）
         # 球体
         spun = self.roll
         surf.blit(A.shade_ball(r, (246, 248, 252), ss=3), (int(x - r), int(cy - r)))

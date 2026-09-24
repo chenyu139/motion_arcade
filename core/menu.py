@@ -19,6 +19,7 @@ import pygame
 from . import base as B
 from . import config as C
 from . import icons
+from . import sprites as SP
 from . import theme as U
 from .inputs import GameInput
 
@@ -154,6 +155,7 @@ class Menu:
         self.orbs.draw(surf)
         self.stars.draw(surf, self.t)
         self._draw_header(surf)
+        self._draw_mascots(surf)
 
         # 当前页的卡片（带翻页位移）
         slide = (1.0 - U.ease_out_cubic(self._page_anim)) * 120.0 * (1 if self.page else -1)
@@ -163,6 +165,24 @@ class Menu:
             self._draw_card(surf, i, slide)
         self._draw_pager(surf)
         self._draw_footer(surf)
+
+    def _draw_mascots(self, surf):
+        """
+        标题两侧的吉祥物：左边熊猫组合、右边盖碗茶。
+
+        这是最省版面又能立刻提升辨识度的位置 —— 卡片墙占满 y 258~912，
+        页脚还有文字，只有标题带两侧是空的。基线统一在 246，
+        加上投影让它们"站在"同一条线上。
+
+        素材缺失时直接整体不画（保持原来的纯文字版式），不做半吊子混搭。
+        """
+        base = 246
+        pair = (("panda_hero", 200, 116), ("panda_cub", 146, 296))
+        if not all(SP.draw(surf, nm, x, base, height=h, anchor="bottom", shadow=0.55)
+                   for nm, h, x in pair):
+            return
+        SP.draw(surf, "gaiwan", 1798, base - 2, height=100, anchor="bottom",
+                shadow=0.5)
 
     def _draw_header(self, surf):
         # 标题

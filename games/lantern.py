@@ -19,6 +19,7 @@ from typing import List
 import pygame
 
 from core import art as A
+from core import sprites as SP
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput
@@ -32,6 +33,10 @@ LAMPS = [
     ("紫", (168, 96, 226), (228, 196, 255)),
     ("橙", (240, 130, 58), (255, 214, 170)),
 ]
+# 素材只有一张红灯笼，靠色相旋转派生另外 5 种配色。
+# 这不是随便调的：色相角必须拉开足够远，玩家在暗场景里才分得清"翠/青"。
+# 数值是相对素材本身的红色（色相≈0）算的偏移量。
+LAMP_HUE = [0.0, 48.0, 135.0, 205.0, -85.0, 26.0]
 MAX_LIVES = 3
 
 
@@ -101,6 +106,12 @@ class LanternGame(BaseGame):
     def _lamp(self, i: int, bright: bool) -> pygame.Surface:
         name, c1, c2 = LAMPS[i]
         W, H = 250, 306
+
+        # 优先用生成素材做色相旋转，「亮」用高饱和 + 原明度，「暗」低饱和 + 压暗
+        sp = SP.hued("lantern", H, LAMP_HUE[i],
+                     sat=1.20 if bright else 0.50, val=1.0 if bright else 0.58)
+        if sp is not None:
+            return sp
 
         def _d(s):
             k = 1.0 if bright else 0.42
@@ -258,12 +269,17 @@ class LanternGame(BaseGame):
                       (int(x - 150 * k - 30), int(y + 150 - 150 * k - 30)))
         if sel:
             pulse = 0.5 + 0.5 * math.sin(self.t * 7)
-            U.aa_circle(surf, (x, y + 150), 138 + pulse * 5,
+            # 素材灯笼比原来的矢量灯窄（193 vs 250），选中光圈半径也要跟着收，
+            # 否则光圈明显比灯大一圈、还会顶出画面
+            U.aa_circle(surf, (x, y + 152), 118 + pulse * 5,
                         (255, 236, 170, 150), 4, ss=3)
-        surf.blit(base, (int(x - 125), int(y)))
+        # 素材比原来的矢量灯窄（193 vs 250），必须按实际宽度居中，
+        # 否则 6 盏灯会整体偏移、选中的光圈和灯身对不上
+        bw = base.get_width()
+        surf.blit(base, (int(x - bw / 2), int(y)))
         if k > 0.55:
             surf.blit(U.glow_surface(180, LAMPS[i][1], 74, 8), (int(x - 180), int(y + 40)))
-        U.text(surf, LAMPS[i][0], (x, y + 300), 30, (255, 236, 206), center=True, bold=True)
+        U.text(surf, LAMPS[i][0], (x, y + 322), 30, (255, 236, 206), center=True, bold=True)
 
     def _draw_sequence(self, surf):
         """顶部显示序列长度与已输入进度。"""

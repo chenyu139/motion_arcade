@@ -19,20 +19,20 @@ from typing import List
 import pygame
 
 from core import art as A
+from core import sprites as SP
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
-# 脸谱配色与纹样：(名称, 主色, 副色, 纹样)
+# 脸谱：名称 / 主色 / 副色 / 纹样 / 精灵名
+# 精灵缺失时自动回退到原来的矢量画法，所以这个列表可以只放已有素材的那几张。
+# 注意必须**全部都有精灵** —— 一局会同时铺开 5 张，混着矢量画会明显不统一。
 MASKS = [
-    ("红脸", (206, 52, 46), (250, 226, 180), "flame"),
-    ("黑脸", (44, 46, 58), (232, 218, 176), "crack"),
-    ("白脸", (244, 242, 236), (72, 76, 96), "cloud"),
-    ("蓝脸", (46, 96, 196), (238, 236, 220), "wave"),
-    ("金脸", (216, 168, 52), (86, 48, 26), "sun"),
-    ("绿脸", (52, 150, 96), (244, 240, 210), "leaf"),
-    ("紫脸", (128, 74, 176), (248, 226, 196), "star"),
-    ("银脸", (196, 202, 214), (56, 60, 78), "moon"),
+    ("红脸", (206, 52, 46), (250, 226, 180), "flame", "mask_red"),
+    ("黑脸", (44, 46, 58), (232, 218, 176), "crack", "mask_black"),
+    ("金脸", (216, 168, 52), (86, 48, 26), "sun", "mask_gold"),
+    ("蓝脸", (46, 96, 196), (238, 236, 220), "wave", "mask_blue"),
+    ("绿脸", (52, 150, 96), (244, 240, 210), "leaf", "mask_green"),
 ]
 
 TOTAL_Q = 15
@@ -189,7 +189,8 @@ class MaskGame(BaseGame):
             self._draw_card(surf, i, spec)
         self._draw_timer(surf)
         if self.feed_t > 0:
-            U.text(surf, self.feedback, (self.W // 2, 900), 42, self.feed_col,
+            # 900 会压在卡片名字上，移到目标说明与卡片行之间的空档
+            U.text(surf, self.feedback, (self.W // 2, 540), 42, self.feed_col,
                    center=True, bold=True, glow=14, glow_color=self.feed_col,
                    alpha=int(255 * min(1.0, self.feed_t * 2.2)))
         self.particles.draw(surf)
@@ -203,7 +204,14 @@ class MaskGame(BaseGame):
                (226, 196, 176), center=True)
 
     def _mask_sprite(self, spec, size: int, hl: bool = False) -> pygame.Surface:
-        name, c1, c2, pat = spec
+        """优先用生成素材（AI 产出 + 抠底），没有才回退矢量绘制。"""
+        sp_name = spec[4] if len(spec) > 4 else ""
+        if sp_name:
+            img = SP.get(sp_name, height=size)
+            if img is not None:
+                return img
+
+        name, c1, c2, pat = spec[:4]
 
         def _d(s):
             r = size / 2
@@ -292,12 +300,14 @@ class MaskGame(BaseGame):
 
     def _draw_target(self, surf):
         spec = self.cards[self.answer]
-        sp = self._mask_sprite(spec, 148)
+        # 素材是竖构图（宽高≈0.75），比原来的方形矢量脸谱更"瘦高"，
+        # 所以尺寸要放大一档、并整体上移，才不会和下面的说明文字打架
+        sp = self._mask_sprite(spec, 184)
         x = self.W // 2
-        y = 272
+        y = 258
         surf.blit(U.glow_surface(150, (255, 200, 120), 60, 8), (x - 150, y - 150))
         surf.blit(sp, (x - sp.get_width() // 2, y))
-        U.text(surf, "找出左边这张脸", (x, y + 176), 28, (240, 214, 194), center=True)
+        U.text(surf, "找出左边这张脸", (x, y + 206), 28, (240, 214, 194), center=True)
 
     def _draw_card(self, surf, i, spec):
         x = self._card_x(i)
@@ -314,8 +324,8 @@ class MaskGame(BaseGame):
         U.glass(surf, rect, 22,
                 (32, 16, 26, 232) if sel else (20, 12, 20, 200),
                 border, 3 if sel else 2)
-        sp = self._mask_sprite(spec, 190)
-        surf.blit(sp, (rect.centerx - sp.get_width() // 2, rect.y + 28))
+        sp = self._mask_sprite(spec, 228)
+        surf.blit(sp, (rect.centerx - sp.get_width() // 2, rect.y + 22))
         U.text(surf, spec[0], (rect.centerx, rect.bottom - 56), 30,
                (255, 236, 216), center=True, bold=True)
         if is_right:
