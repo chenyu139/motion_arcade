@@ -67,6 +67,7 @@ class PandaRollGame(BaseGame):
         self.items: List[dict] = []
         self.spawn_cd = 0.9
         self.roll = 0.0
+        self.crouch_anim = 0.0
         self.invuln = 0.0
         self.best = 0
         self._build_bg()
@@ -111,9 +112,9 @@ class PandaRollGame(BaseGame):
 
         # 换道
         want = 1
-        if inp.axis < -0.30:
+        if inp.xc < -0.30:
             want = 0
-        elif inp.axis > 0.30:
+        elif inp.xc > 0.30:
             want = 2
         if want != self.lane:
             self.lane = want
@@ -121,13 +122,17 @@ class PandaRollGame(BaseGame):
         self.lane_f += (self.lane - self.lane_f) * min(1.0, dt * 11.0)
 
         # 跳跃
-        if inp.jump and self.jump_cd <= 0 and self.jump_t <= 0.0:
+        if inp.action and self.jump_cd <= 0 and self.jump_t <= 0.0:
             self.jump_t = 0.62
             self.jump_cd = 0.30
             self.particles.emit(self.W / 2, GROUND - 20, 10, color=(160, 236, 214),
                                 spread=200, vy=-160, gravity=900, life=0.4, size=4)
         if self.jump_t > 0:
             self.jump_t = max(0.0, self.jump_t - dt)
+
+        # 下蹲：身体姿态模式下的独有动作，可以钻过"高陶俑"（原本必须换道）
+        self.crouch_anim += ((1.0 if inp.crouching else 0.0) - self.crouch_anim) \
+            * min(1.0, dt * 9.0)
         self.z_ball = 0.055 + max(0.0, math.sin(
             (1.0 - self.jump_t / 0.62) * math.pi)) * 0.0  # 跳跃用高度表示，不改 z
 
@@ -162,12 +167,19 @@ class PandaRollGame(BaseGame):
                             self.set_msg(f"竹笋 x{self.bamboo}", "+120 分", 0.9, (170, 246, 190))
                 else:
                     jumping = self.jump_t > 0.10
-                    if same_lane and not jumping and self.invuln <= 0:
+                    # 下蹲可以钻过"高陶俑"的下沿 —— 这是体感模式独有的解法，
+                    # 头部模式下只能换道绕开。
+                    ducking = self.crouch_anim > 0.55 and it["kind"] == "tall"
+                    if same_lane and not jumping and not ducking and self.invuln <= 0:
                         it["dead"] = True
                         self._hit()
                     elif same_lane and jumping and it["kind"] == "tall":
                         it["dead"] = True
                         self._hit()
+                    elif same_lane and ducking and not it.get("ducked"):
+                        it["ducked"] = True
+                        self.score += 40
+                        self.set_msg("钻过去了", "+40", 0.6, (200, 246, 220))
 
         # 结算
         if self.dist >= self.TARGET_M:
@@ -304,6 +316,7 @@ class PandaRollGame(BaseGame):
         y, sc = project(self.z_ball)
         x = self._lane_x(self.lane_f, sc)
         r = max(8, int(86 * sc) // 4 * 4)     # 量化半径，避免 shade_ball 缓存爆炸
+        r = max(8, int(r * (0.74 + 0.26 * (1.0 - self.crouch_anim))) // 4 * 4)  # 下蹲时压扁
         hop = math.sin(max(0.0, (1.0 - self.jump_t / 0.62)) * math.pi) if self.jump_t > 0 else 0.0
         cy = y - r * 0.86 - hop * 190
         if self.invuln > 0 and int(self.invuln * 14) % 2 == 0:

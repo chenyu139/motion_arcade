@@ -112,9 +112,9 @@ class DuelGame(BaseGame):
             return
 
         # 上球：头部
-        self.ax += inp.axis * 900.0 * dt
+        self.ax += inp.xc * 900.0 * dt
         self.ax = U.clamp(self.ax, BALL_R + 40, self.W - BALL_R - 40)
-        if abs(inp.axis) < 0.08:
+        if abs(inp.xc) < 0.08:
             self.ax += math.sin(self.t * 0.8) * 40 * dt
         # 下球：手
         tx, ty = self.hand_screen(inp, pygame.Rect(BALL_R + 40, LOWER_Y - 130,

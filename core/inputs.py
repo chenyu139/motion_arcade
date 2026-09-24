@@ -131,6 +131,53 @@ class GameInput:
         y = (1.0 - self.hy) if invert_y else self.hy
         return (self.hx * w, y * h)
 
+    # ── 通道融合：让同一份游戏代码同时吃"头部"和"全身" ──────────────
+    #  这是支持体感玩法的关键：游戏里把 inp.axis 换成 inp.xc、
+    #  inp.jump 换成 inp.action，就自动同时支持三种玩法，
+    #  而且用户在摄像头前怎么动都行 —— 哪种动作幅度大就用哪种。
+
+    @property
+    def xc(self) -> float:
+        """
+        横向控制量 -1~1：取「头部平移」与「身体横移」中更明显的那个。
+
+        身体没入镜（body_found=False）时等价于 inp.axis，
+        所以老游戏改用它不会有任何行为变化。
+        """
+        if self.body_found and abs(self.body_x) > abs(self.axis):
+            return self.body_x
+        return self.axis
+
+    @property
+    def action(self) -> bool:
+        """
+        动作键：抬头 / 举手 / 张嘴 任一触发。
+
+        举手是最自然的体感动作（拍球、击鼓、抓握），
+        所以只要有一只手明显举过肩就当成"按下动作键"。
+        """
+        return bool(self.jump or self.hands_up > 0
+                    or self.arm_l > 0.32 or self.arm_r > 0.32)
+
+    @property
+    def action_l(self) -> bool:
+        """左臂独立的动作键（双手游戏用）。"""
+        return bool(self.arm_l > 0.32 or (self.jump and self.arm_r <= 0.32))
+
+    @property
+    def action_r(self) -> bool:
+        return bool(self.arm_r > 0.32 or (self.jump and self.arm_l <= 0.32))
+
+    @property
+    def crouching(self) -> bool:
+        """是否处于下蹲状态（下半身或躯干可见时才有效）。"""
+        return self.body_found and self.crouch > 0.45
+
+    @property
+    def arms_wide(self) -> bool:
+        """双臂是否大幅张开（守门、接物类用）。"""
+        return self.hands_up >= 2 or (self.arm_l > 0.5 and self.arm_r > 0.5)
+
 
 # =========================================================================== #
 # 头部 → 控制量

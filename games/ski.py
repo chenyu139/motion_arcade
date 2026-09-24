@@ -118,11 +118,11 @@ class SkiGame(BaseGame):
         self.dist += move * 0.0106
 
         # 横向控制
-        self.px += inp.axis * 690.0 * dt
+        self.px += inp.xc * 690.0 * dt
         self.px = U.clamp(self.px, 90, self.W - 90)
 
         # 跳跃
-        if inp.jump and self.jump_cd <= 0 and self.jump_t <= 0:
+        if inp.action and self.jump_cd <= 0 and self.jump_t <= 0:
             self.jump_t = 0.52
             self.jump_cd = 0.28
             self.particles.emit(self.px, PLAYER_Y + 40, 14, color=(255, 255, 255),

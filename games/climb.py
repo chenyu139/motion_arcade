@@ -148,11 +148,11 @@ class ClimbGame(BaseGame):
             return
 
         # 横向挪动
-        self.px += inp.axis * 330.0 * dt
+        self.px += inp.xc * 330.0 * dt
         self.px = U.clamp(self.px, WALL_L - 60, WALL_R + 60)
 
         # 抬头抓握
-        if inp.jump and self.hand_cd <= 0:
+        if inp.action and self.hand_cd <= 0:
             self.hand_cd = 0.32
             self._grab()
 

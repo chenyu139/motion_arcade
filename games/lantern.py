@@ -175,15 +175,15 @@ class LanternGame(BaseGame):
             return
 
         # 选灯
-        if inp.axis < -0.30 and self.sel > 0 and self.cool <= 0:
+        if inp.xc < -0.30 and self.sel > 0 and self.cool <= 0:
             self.sel -= 1
             self.cool = 0.18
-        elif inp.axis > 0.30 and self.sel < N_LAMP - 1 and self.cool <= 0:
+        elif inp.xc > 0.30 and self.sel < N_LAMP - 1 and self.cool <= 0:
             self.sel += 1
             self.cool = 0.18
         self.sel_f += (self.sel - self.sel_f) * min(1.0, dt * 12.0)
 
-        if inp.jump and self.cool <= 0:
+        if inp.action and self.cool <= 0:
             self.cool = 0.28
             self.lit[self.sel] = 1.0
             if self.sel == self.seq[self.pos]:

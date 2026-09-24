@@ -70,6 +70,8 @@ class KeeperGame(BaseGame):
         self.dive_l = 0.0
         self.dive_r = 0.0
         self.flash_side = 0.0
+        self.wide = False
+        self.wide_anim = 0.0
         self._bg = self._make_bg()
         self.set_msg("准备", "头管左边，手管右边", 1.8, (200, 246, 224))
 
@@ -113,7 +115,7 @@ class KeeperGame(BaseGame):
         self.dive_r = max(0.0, self.dive_r - dt * 3.0)
 
         # 左门将：头部
-        self.lx += inp.axis * 940.0 * dt
+        self.lx += inp.xc * 940.0 * dt
         self.lx = U.clamp(self.lx, GOAL_L + 120, MID - 60)
         # 右门将：手（只用横向分量，纵向留给别的手势）
         hx_norm = U.clamp(0.5 + (inp.hx - 0.5) * 1.34, 0.0, 1.0)
@@ -123,6 +125,10 @@ class KeeperGame(BaseGame):
         self.hy = inp.hy
         self.h_open = inp.hand_open
         self.h_found = inp.hand_found
+        # 体感：双臂展开时两名门将的覆盖范围都变大（他整个人横过来挡）
+        self.wide = bool(inp.arms_wide)
+        self.wide_anim += ((1.0 if self.wide else 0.0) - self.wide_anim) \
+            * min(1.0, dt * 6.0)
 
         if self.phase == "aim":
             self.aim_t -= dt
@@ -168,6 +174,7 @@ class KeeperGame(BaseGame):
         d = abs(b["tx"] - guard_x)
         # 门将扑救：正中区域容差更大（身体挡住），边缘要靠扑
         reach = SAVE_R if d < 120 else SAVE_R * 0.72
+        reach *= (1.0 + 0.42 * self.wide_anim)      # 双臂展开 → 覆盖更宽
         saved = d < reach
         if saved:
             self.saves += 1
@@ -226,18 +233,24 @@ class KeeperGame(BaseGame):
 
     def _draw_keeper(self, surf, x, side, dive, style):
         foot = GOAL_LINE_Y + 6
-        lean = dive * 0.75
+        lean = max(dive * 0.75, self.wide_anim * 0.40)
+        spread = 0.5 + self.wide_anim * 1.05      # 双臂展开时张得更开
         pose = A.pose(lean=lean * 0.9, crouch=0.30,
-                      arm_l=-0.5 - lean * 1.7 if side == "L" else -0.5,
-                      arm_r=0.5 + lean * 1.7 if side == "R" else 0.5,
+                      arm_l=-spread - lean * 1.7 if side == "L" else -spread,
+                      arm_r=spread + lean * 1.7 if side == "R" else spread,
                       leg_l=-0.22 - lean * 0.4, leg_r=0.22 + lean * 0.4, flip=1)
         spr = A.figure_cached(KEEPER_H, style, pose, ss=3)
         U.aa_ellipse(surf, (int(x - 62), foot - 12, 124, 26), (0, 0, 0, 90), 0, ss=2)
         A.draw_figure(surf, spr, x, foot, 26)
-        # 可达范围提示
+        # 可达范围提示（体感模式下会随双臂展开变宽，玩家能直接看到收益）
         col = (150, 240, 190) if side == "L" else (150, 200, 250)
-        U.aa_line(surf, (x - SAVE_R, foot + 6), (x + SAVE_R, foot + 6),
+        half = SAVE_R * (1.0 + 0.42 * self.wide_anim)
+        U.aa_line(surf, (x - half, foot + 6), (x + half, foot + 6),
                   (col[0], col[1], col[2], 90), 4)
+        if self.wide_anim > 0.2 and side == "L":
+            U.text(surf, "双臂展开 · 范围 +42%", (MID, GOAL_LINE_Y - 40), 24,
+                   (170, 246, 200), center=True, bold=True,
+                   alpha=int(230 * self.wide_anim))
 
     def _draw_side_labels(self, surf):
         U.text(surf, "头部控制", ((GOAL_L + MID) / 2, 258), 26, (170, 240, 200),

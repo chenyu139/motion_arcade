@@ -38,7 +38,7 @@ os.makedirs(OUT, exist_ok=True)
 
 
 def build_shell() -> Shell:
-    sh = Shell(backend="auto", cam_index=C_INDEX, no_cam=True, windowed=True)
+    sh = Shell(vision="auto", cam_index=C_INDEX, no_cam=True, windowed=True)
     return sh
 
 

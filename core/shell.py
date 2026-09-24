@@ -91,6 +91,10 @@ class Shell:
         self.paused = False
         self.fullscreen = not windowed
         self.show_prev = True
+        # 体感模式：打开后纯头部游戏也会加载全身姿态，
+        # 游戏里的 inp.xc / inp.action 会自动优先采用身体动作。
+        # 默认关，因为全身姿态检测不便宜（真机 16~29ms/次）。
+        self.body_enabled = False
         self.running = True
         self.lost_t = 0.0
         self.toast = ""
@@ -247,6 +251,14 @@ class Shell:
                 self.paused = not self.paused
             elif k == pygame.K_h:
                 self.show_prev = not self.show_prev
+            elif k == pygame.K_b:
+                self.body_enabled = not self.body_enabled
+                if self.tracker and self.tracker.ok:
+                    self.tracker.set_vision_mode("full" if self.body_enabled else
+                                                 ("hand" if self.scene == "menu" else "off"))
+                self.toast_msg(U.T(
+                    f"体感模式：{'已开启（用身体动作）' if self.body_enabled else '已关闭（用头部）'}",
+                    f"Body mode {'ON' if self.body_enabled else 'OFF'}"))
             elif k == pygame.K_TAB:
                 # 快速切换下一个游戏
                 keys = list(self.games)
@@ -277,11 +289,14 @@ class Shell:
 
         真机实测 Vision 在真实图像上要 16~29ms/次，十几个纯头部游戏根本
         不需要它，白白跑就是在抢采集线程的时间。
+
+        体感模式（按 B）打开时，纯头部游戏也会加载全身姿态，
+        因为它们的 inp.xc / inp.action 会自动优先采用身体动作。
         """
         if not (self.tracker and self.tracker.ok):
             return
         req = set(getattr(cls, "REQUIRES", ("head",)))
-        if "body" in req:
+        if "body" in req or self.body_enabled:
             mode = "full"
         elif "hand" in req:
             mode = "hand"
@@ -289,7 +304,8 @@ class Shell:
             mode = "off"
         if mode != self.tracker.vision_mode:
             self.tracker.set_vision_mode(mode)
-            print(f"[shell] 视觉负载 → {mode}（{cls.TITLE}）")
+            print(f"[shell] 视觉负载 → {mode}（{cls.TITLE}，体感模式"
+                  f"{'开' if self.body_enabled else '关'}）")
 
     def back_to_menu(self) -> None:
         self.scene = "menu"

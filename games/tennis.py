@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from core import art as A
+from core import sichuan as SC
 from core import config as C
 from core import theme as U
 from core.base import BaseGame, register
@@ -76,8 +77,11 @@ class TennisGame(BaseGame):
         W, H = self.W, self.H
         self._bg = pygame.Surface((W, H))
         self._bg.blit(U.vgrad3(W, H, SKY_TOP, (48, 92, 148), SKY_BOT), (0, 0))
+        # 川西自然天际线：九寨沟 / 稻城 / 峨眉 / 蜀南竹海
+        self._bg.blit(SC.skyline(W, 186, preset="nature", base=(44, 62, 92),
+                                 haze=0.34, seed=6, count=6), (0, 272))
         # 远景看台
-        self._bg.blit(A.crowd_stand(W, 230, seed=12, rows=7, lit=-0.12), (0, 300))
+        self._bg.blit(A.crowd_stand(W, 226, seed=12, rows=7, lit=-0.12), (0, 432))
         self._bg.blit(A.shade_panel(W, 34, (26, 34, 56), 0, 1.0, 0.72), (0, 512))
         # 球场
         self._court_top = 546
@@ -154,7 +158,7 @@ class TennisGame(BaseGame):
         self.hit_marks = [m for m in self.hit_marks if m["t"] > 0]
 
         # ---- 我方跑位 ----
-        self.px += inp.axis * 620.0 * dt
+        self.px += inp.xc * 620.0 * dt
         self.px = U.clamp(self.px, P_MIN, P_MAX)
 
         # ---- 对手跑位（回合越长越快，但会疲劳）----
@@ -172,7 +176,7 @@ class TennisGame(BaseGame):
             return
 
         # ---- 挥拍 ----
-        if inp.jump and self.swing_cool <= 0:
+        if inp.action and self.swing_cool <= 0:
             self._do_swing()
 
         # ---- 球 ----

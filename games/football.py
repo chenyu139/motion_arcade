@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from core import art as A
+from core import sichuan as SC
 from core import config as C
 from core import theme as U
 from core.base import BaseGame, register
@@ -61,7 +62,7 @@ class FootballGame(BaseGame):
     DIFFICULTY = 2
     ACHIEVEMENT = "10 次射门中打进 6 球"
     REQUIRES = ("head",)
-    MSG_Y = 226
+    MSG_Y = 300
     SHOTS = C.FB_SHOTS
 
     # ------------------------------------------------------------------ 初始化
@@ -94,14 +95,18 @@ class FootballGame(BaseGame):
         W, H = self.W, self.H
         self._bg = pygame.Surface((W, H))
         self._bg.blit(A.stadium_bg(W, H, (8, 12, 34), (20, 32, 68), seed=4), (0, 0))
+        # 成都城市天际线：宽窄巷子 / 锦里 / 峨眉金顶 / 青城山
+        # 高度压到 150：它是最远景，不能抢看台和球门的视觉重量
+        self._bg.blit(SC.skyline(W, 156, preset="city", base=(34, 44, 74),
+                                 haze=0.30, seed=11, count=5), (0, 108))
         # 看台（远近两层）
-        stand = A.crowd_stand(W, 296, seed=7, rows=8, lit=-0.05)
-        self._bg.blit(stand, (0, 108))
+        stand = A.crowd_stand(W, 150, seed=7, rows=6, lit=-0.05)
+        self._bg.blit(stand, (0, 258))
         # 广告牌
         self._led = self._make_led()
-        self._bg.blit(self._led, (0, 412))
+        self._bg.blit(self._led, (0, 402))
         # 草坪
-        self._pitch_top = 488
+        self._pitch_top = 470
         self._pitch = self._make_pitch()
         self._bg.blit(self._pitch, (0, self._pitch_top))
         # 灯光
@@ -166,9 +171,9 @@ class FootballGame(BaseGame):
 
         if self.phase == "aim":
             # 横向：头部 axis 直接驱动（带惯性更跟手）
-            self.aim_x += inp.axis * 1080.0 * dt
+            self.aim_x += inp.xc * 1080.0 * dt
             # 不操作时缓慢自动扫动，避免玩家完全不参与
-            if abs(inp.axis) < 0.10:
+            if abs(inp.xc) < 0.10:
                 self.aim_x += self.aim_dir * 250.0 * dt
             if self.aim_x < GOAL_L + 56:
                 self.aim_x = GOAL_L + 56
@@ -187,7 +192,7 @@ class FootballGame(BaseGame):
             self.keeper_x += math.copysign(min(spd * dt, abs(self.keeper_tx - self.keeper_x)),
                                            self.keeper_tx - self.keeper_x)
 
-            if inp.jump:
+            if inp.action:
                 self._shoot()
         elif self.phase == "shoot":
             self._update_ball(dt)
@@ -286,7 +291,7 @@ class FootballGame(BaseGame):
     # ------------------------------------------------------------------ 绘制
     def draw(self, surf: pygame.Surface) -> None:
         surf.blit(self._bg, (0, 0))
-        self._led_strip(surf, 434)
+        self._led_strip(surf, 424)
         self._draw_goal(surf)
         self._draw_keeper(surf)
         if self.phase in ("aim", "shoot"):

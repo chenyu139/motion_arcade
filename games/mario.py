@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from core import art as A
+from core import sichuan as SC
 from core import config as C
 from core import theme as U
 from core.base import BaseGame, register
@@ -160,6 +161,9 @@ class MarioGame(BaseGame):
         W = LEVEL_W + 240
         self._bg = pygame.Surface((W, C.DESIGN_H))
         self._bg.blit(self._sky, (0, 0))
+        # 川西群山（青城 / 峨眉 / 稻城 / 乐山）作为最远景
+        self._bg.blit(SC.skyline(W, 400, preset="mountain", base=(74, 128, 164),
+                                 haze=0.44, seed=3, count=6), (0, 150))
         for hx, hr, hs in self._hills:
             if hx > W:
                 continue
@@ -218,8 +222,8 @@ class MarioGame(BaseGame):
             return
 
         # ---- 输入 ----
-        axis = max(-1.0, min(1.0, inp.axis * 1.15))
-        jump = inp.jump
+        axis = max(-1.0, min(1.0, inp.xc * 1.15))
+        jump = inp.action
         if abs(axis) > 0.08:
             self.face = 1 if axis > 0 else -1
 

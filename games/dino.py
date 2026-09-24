@@ -141,7 +141,7 @@ class DinoGame(BaseGame):
             return
 
         # 抬头 → 上升
-        lift = 1.0 if inp.jump else max(0.0, inp.up - 0.15) * 1.3
+        lift = 1.0 if inp.action else max(0.0, inp.up - 0.15) * 1.3
         lift = U.clamp(lift, 0.0, 1.4)
         self.vy += GRAVITY * dt + LIFT * lift * dt
         self.vy = U.clamp(self.vy, -880.0, 900.0)

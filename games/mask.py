@@ -122,15 +122,15 @@ class MaskGame(BaseGame):
             return
 
         # 选择
-        if inp.axis < -0.32 and self.sel > 0:
+        if inp.xc < -0.32 and self.sel > 0:
             self.sel -= 1
             self.cool = 0.20
-        elif inp.axis > 0.32 and self.sel < 4:
+        elif inp.xc > 0.32 and self.sel < 4:
             self.sel += 1
             self.cool = 0.20
         self.sel_f += (self.sel - self.sel_f) * min(1.0, dt * 13.0)
 
-        if inp.jump:
+        if inp.action:
             self.cool = 0.45
             if self.sel == self.answer:
                 self._right()

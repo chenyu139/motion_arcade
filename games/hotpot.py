@@ -19,6 +19,7 @@ import numpy as np
 import pygame
 
 from core import art as A
+from core import sichuan as SC
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput
@@ -180,10 +181,10 @@ class HotpotGame(BaseGame):
             return
 
         # 筷子
-        self.chop_x += inp.axis * 0.62 * dt
+        self.chop_x += inp.xc * 0.62 * dt
         self.chop_x = U.clamp(self.chop_x, 0.06, 0.94)
         self.chop_anim = max(0.0, self.chop_anim - dt * 3.4)
-        if inp.jump and self.chop_anim <= 0:
+        if inp.action and self.chop_anim <= 0:
             self._dip()
 
         # 食材绕锅漂浮

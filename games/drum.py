@@ -152,16 +152,16 @@ class DrumGame(BaseGame):
         self.notes = [n for n in self.notes if n["y"] < self.H + 80 and not n.get("gone")]
 
         # 选轨
-        if inp.axis < -0.28 and self.sel > 0 and self.cool <= 0:
+        if inp.xc < -0.28 and self.sel > 0 and self.cool <= 0:
             self.sel -= 1
             self.cool = 0.16
-        elif inp.axis > 0.28 and self.sel < N_LANE - 1 and self.cool <= 0:
+        elif inp.xc > 0.28 and self.sel < N_LANE - 1 and self.cool <= 0:
             self.sel += 1
             self.cool = 0.16
         self.sel_f += (self.sel - self.sel_f) * min(1.0, dt * 14.0)
 
         # 击鼓
-        if inp.jump and self.cool <= 0:
+        if inp.action and self.cool <= 0:
             self.cool = 0.18
             self._hit(self.sel)
 

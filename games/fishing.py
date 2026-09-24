@@ -19,6 +19,7 @@ from typing import List
 import pygame
 
 from core import art as A
+from core import sichuan as SC
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput
@@ -76,8 +77,11 @@ class FishingGame(BaseGame):
         s = pygame.Surface((W, H))
         s.blit(U.vgrad3(W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238)), (0, 0))
         rng = random.Random(5)
+        # 都江堰 / 乐山大佛 / 三星堆 —— 岷江两岸的四川地标
+        self._bg.blit(SC.skyline(W, 230, preset="culture", base=(86, 108, 122),
+                                 haze=0.48, seed=4, count=5), (0, WATER_Y - 230))
         # 远山
-        for _ in range(11):
+        for _ in range(6):
             x = rng.uniform(-120, W)
             w = rng.uniform(280, 620)
             h = rng.uniform(90, 210)
@@ -109,11 +113,11 @@ class FishingGame(BaseGame):
             return
 
         # 船
-        self.boat_x += inp.axis * 760.0 * dt
+        self.boat_x += inp.xc * 760.0 * dt
         self.boat_x = U.clamp(self.boat_x, 150, self.W - 150)
 
         # 撒网
-        if inp.jump and self.cool <= 0:
+        if inp.action and self.cool <= 0:
             self.cool = 0.55
             self.net_t = 0.55
             self.net_x = self.boat_x
