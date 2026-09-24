@@ -1,0 +1,26 @@
+# Motion Arcade 依赖
+# ==================
+# 安装：python -m pip install -r requirements.txt
+#
+# 版本钉死的原因写在这里，避免下次升级踩坑：
+
+pygame==2.6.1
+# 必须 >=2.1：需要 SCALED 显示标志（GPU 缩放到全屏）与 set_alpha 的稳定行为
+
+numpy>=1.24,<2.3
+# OpenCV / pygame.surfarray 都要用
+
+opencv-python-headless==4.10.0.84
+# ⚠ 必须是 headless 版本，且必须钉在 4.10。
+#   非 headless 的 opencv-python 会自带一份 libSDL2，与 pygame 的 SDL2 冲突，
+#   轻则视频驱动初始化失败，重则直接崩溃。
+#   5.x 的 headless 包内部仍然捆绑 SDL2，同样会冲突，所以不能升。
+
+# ---- 可选：媒体管线的替代后端 ----
+# mediapipe>=1.0
+#   本机（macOS）实测**不可用**：MediaPipe 1.x 的 TensorsToDetectionsCalculator
+#   里硬编码了 Metal helper（DrishtiMetalHelper），即使显式指定 CPU delegate，
+#   也会 `Check failed: service_ Service is unavailable` 直接 SIGABRT（rc=-6）。
+#   所以本项目不依赖它，人脸检测走 OpenCV YuNet，手部检测走肤色轮廓方案。
+#   如果未来在别的机器上可用，用 `python main.py --backend mediapipe` 启用，
+#   会额外获得"张嘴"触发。
