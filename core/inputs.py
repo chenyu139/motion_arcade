@@ -148,6 +148,23 @@ class GameInput:
             return self.body_x
         return self.axis
 
+    def _arm_flags(self) -> Tuple[bool, bool]:
+        """
+        手臂是否抬起。
+
+        **必须"身体当前确实在识别中"才算数** —— 姿态模型隔帧跑、
+        丢检时还会退避，如果只看 arm_l/arm_r 的数值，那一两帧的陈旧值
+        会让角色在没有人做动作时继续"按键"（这正是"没识别到头却还在乱动"）。
+        """
+        if not self.body_found:
+            return (False, False)
+        return (self.arm_l > 0.32, self.arm_r > 0.32)
+
+    @property
+    def _hands_up_now(self) -> bool:
+        """举手同样来自身体姿态，必须一起门控。"""
+        return self.body_found and self.hands_up > 0
+
     @property
     def action(self) -> bool:
         """
@@ -156,17 +173,19 @@ class GameInput:
         举手是最自然的体感动作（拍球、击鼓、抓握），
         所以只要有一只手明显举过肩就当成"按下动作键"。
         """
-        return bool(self.jump or self.hands_up > 0
-                    or self.arm_l > 0.32 or self.arm_r > 0.32)
+        l, r = self._arm_flags()
+        return bool(self.jump or self._hands_up_now or l or r)
 
     @property
     def action_l(self) -> bool:
         """左臂独立的动作键（双手游戏用）。"""
-        return bool(self.arm_l > 0.32 or (self.jump and self.arm_r <= 0.32))
+        l, r = self._arm_flags()
+        return bool(l or (self.jump and not r))
 
     @property
     def action_r(self) -> bool:
-        return bool(self.arm_r > 0.32 or (self.jump and self.arm_l <= 0.32))
+        l, r = self._arm_flags()
+        return bool(r or (self.jump and not l))
 
     @property
     def crouching(self) -> bool:
@@ -176,7 +195,9 @@ class GameInput:
     @property
     def arms_wide(self) -> bool:
         """双臂是否大幅张开（守门、接物类用）。"""
-        return self.hands_up >= 2 or (self.arm_l > 0.5 and self.arm_r > 0.5)
+        if not self.body_found:
+            return False
+        return bool(self.hands_up >= 2 or (self.arm_l > 0.5 and self.arm_r > 0.5))
 
 
 # =========================================================================== #
@@ -214,20 +235,42 @@ class HeadController:
         self.head_y = 0.0
         self.yaw = 0.0
         self.found = False
+        self.tracking = False          # 迟滞后的"可用"状态（见 update）
+        self.lost_t = 99.0             # 连续丢检时长
         self.calibrating = True
         self.progress = 0.0
 
+    def _zero(self) -> None:
+        """进入 LOST：**立即**归零，不做缓慢衰减。"""
+        self.axis = 0.0
+        self.up = 0.0
+        self.head_y = 0.0
+        self.yaw = 0.0
+        self.jump = False
+
     def update(self, st: FaceState, dt: float) -> None:
+        """
+        三段状态机（TRACKING / HOLD / LOST）。
+
+        关键取舍：短暂丢检时**冻结**输出而不是衰减 ——
+        检测闪烁时"衰减"会让角色随每次漏检往中间滑一下再弹回去，
+        看起来就是它自己在乱动；冻结则完全没有可见变化。
+        真正丢失之后就立即归零，不留"滑行"的尾巴。
+        """
         C = self.cfg
         self.found = st.found
+
         if not st.found:
-            k = 1.0 - math.exp(-dt / 0.14)
-            self.axis += k * (0.0 - self.axis)
-            self.up *= (1.0 - k)
-            self.head_y *= (1.0 - k)
-            self.yaw *= (1.0 - k)
-            self.jump = False
+            self.lost_t += dt
+            if self.lost_t <= C.HOLD_AFTER:
+                return                     # HOLD：保持上一帧的有效输出，一点不变
+            self._zero()                   # LOST：立即停住
+            self.tracking = False
             return
+
+        was_lost = self.lost_t > C.HOLD_AFTER
+        self.lost_t = 0.0
+        self.tracking = True
 
         if self.calibrating:
             self._samples.append((st.cx, st.cy))
@@ -243,6 +286,13 @@ class HeadController:
 
         ncx, ncy = self.neutral  # type: ignore[misc]
         raw = _deadzone(st.cx - ncx, C.DEADZONE_X, C.FULL_SCALE_X)
+
+        if was_lost:
+            # 刚重新捕获：限制单帧跳变。假阳性（墙上的图案、路过的反光）
+            # 往往只出现一两帧，限制住就不会把角色一下甩到边上。
+            step = C.REACQ_STEP
+            raw = max(self.axis - step, min(self.axis + step, raw))
+
         # 基于时间的平滑：帧率变化时跟随手感保持一致（见 config 里的说明）
         k = 1.0 - math.exp(-dt / max(1e-3, C.HEAD_TAU))
         self.axis += k * (raw - self.axis)
@@ -255,8 +305,10 @@ class HeadController:
         self.jump = (up_raw > C.JUMP_DY) or (st.mouth_open > C.MOUTH_OPEN_THRESHOLD)
 
     def game_input(self) -> GameInput:
+        # found 传的是**迟滞后的**状态：短暂丢帧期间仍然是 True，
+        # 这样 shell 的"丢失计时"不会被检测闪烁反复清零。
         return GameInput(axis=self.axis, jump=self.jump, up=self.up,
-                         head_y=self.head_y, yaw=self.yaw, found=self.found)
+                         head_y=self.head_y, yaw=self.yaw, found=self.tracking)
 
 
 # =========================================================================== #
@@ -286,6 +338,7 @@ class HandController:
         self._closed_frames = 0
         self._was_closed = False
         self._pinch_fired = False
+        self._armed = False
         self.pinch = False
         self.release = False
 
@@ -298,6 +351,10 @@ class HandController:
             self.lost_t += dt
             if self.lost_t > C.HAND_LOST_AFTER:
                 self.seen = False
+                # 手真的离开了：解除"可触发"状态。
+                # 否则重新捕捉到一只一直握着的手时，会在完全没做动作的情况下
+                # 立刻误触发一次捏合（边沿条件成立，但根本没有"张开→握拢"的转变）。
+                self._armed = False
             self._was_closed = False
             self._closed_frames = 0
             self._pinch_fired = False
@@ -306,11 +363,14 @@ class HandController:
         self.lost_t = 0.0
         h = max(hands, key=lambda z: z.area)
         # 基于时间的平滑：帧率变化时跟随手感保持一致
-        k = 1.0 - math.exp(-dt / max(1e-3, C.SMOOTH_TAU))
+        k = 1.0 - math.exp(-dt / max(1e-3, C.HAND_TAU))
         self.sx += k * (h.x - self.sx)
         self.sy += k * (h.y - self.sy)
         self.sopen += k * (h.open - self.sopen)
         self.seen = True
+
+        if self.sopen > C.HAND_OPEN_THRESHOLD:
+            self._armed = True          # 观察到"张开"之后，才允许产生捏合边沿
 
         closed = self.sopen < C.HAND_CLOSE_THRESHOLD
         if closed:
@@ -319,7 +379,7 @@ class HandController:
             # 之前用 _was_closed 判断，而它在前一帧就被置 True 了，
             # 导致 `_closed_frames == 2 and not _was_closed` 永远为假 —— pin
             # 一次都不会触发。
-            if self._closed_frames >= 2 and not self._pinch_fired:
+            if self._armed and self._closed_frames >= 2 and not self._pinch_fired:
                 self.pinch = True
                 self._pinch_fired = True
             self._was_closed = True
@@ -402,23 +462,37 @@ class BodyController:
         self.lean = 0.0
         self.hands_up = 0
         self.found = False
+        self.tracking = False
+        self.lost_t = 99.0
         self.lb_visible = False
         self.calibrating = True
         self.progress = 0.0
+
+    def _zero(self) -> None:
+        self.body_x = 0.0
+        self.crouch = 0.0
+        self.arm_l = self.arm_r = 0.0
+        self.arm_l_ext = self.arm_r_ext = 0.0
+        self.lean = 0.0
+        self.hands_up = 0
 
     def update(self, pose, dt: float) -> None:
         C = self.cfg
         ok = pose is not None and getattr(pose, "found", False)
         self.found = bool(ok)
         if not ok:
-            k = 1.0 - math.exp(-dt / 0.18)
-            self.body_x += k * (0.0 - self.body_x)
-            self.arm_l += k * (0.0 - self.arm_l)
-            self.arm_r += k * (0.0 - self.arm_r)
-            self.crouch += k * (0.0 - self.crouch)
-            self.lean += k * (0.0 - self.lean)
-            self.hands_up = 0
+            # 与头部同一套迟滞逻辑：短暂丢帧冻结（姿态模型本来就隔帧跑，
+            # 逐帧判定会让动作在"有/无"之间抖），真丢了才立即归零。
+            self.lost_t += dt
+            if self.lost_t <= C.HOLD_AFTER:
+                return
+            self._zero()
+            self.tracking = False
             return
+
+        was_lost = self.lost_t > C.HOLD_AFTER
+        self.lost_t = 0.0
+        self.tracking = True
 
         center = pose.body_center
         scale = max(0.06, pose.scale)
@@ -437,6 +511,9 @@ class BodyController:
         nx = self.neutral_x if self.neutral_x is not None else 0.5
         # 横向位移：以肩宽为单位，死区 0.25 个肩宽 → 满速 1.1 个肩宽
         raw = _deadzone((center.x - nx) / scale, 0.25, 1.10)
+        if was_lost:
+            step = C.REACQ_STEP
+            raw = max(self.body_x - step, min(self.body_x + step, raw))
         k = 1.0 - math.exp(-dt / max(1e-3, C.BODY_TAU))
         self.body_x += k * (raw - self.body_x)
 
@@ -452,7 +529,9 @@ class BodyController:
 
     def apply(self, inp: GameInput, pose) -> GameInput:
         inp.pose = pose
-        inp.body_found = self.found
+        # 传迟滞后的状态：HOLD 期间仍是"有身体"，LOST 之后立刻变成"没有"，
+        # 否则 GameInput.xc 会拿着冻结的陈旧 body_x 让角色继续横移。
+        inp.body_found = self.tracking
         inp.body_x = self.body_x
         inp.crouch = self.crouch
         inp.arm_l = self.arm_l

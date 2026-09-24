@@ -56,6 +56,31 @@ except Exception:
 # =========================================================================== #
 # 人脸后端
 # =========================================================================== #
+def _plausible_face(f, w: int, h: int) -> bool:
+    """
+    人脸框合理性筛选。
+
+    只挡掉"明显不像脸"的框。宁可偶尔漏掉一个真脸也不能放进一个假阳性 ——
+    漏检走的是冻结/归零逻辑（安全的失败方向），而假阳性的中心经常贴边，
+    归一化后 cx 直接打到 0 或 1，角色会被瞬间甩到最边上。
+    """
+    bw, bh = float(f[2]), float(f[3])
+    if bw <= 0 or bh <= 0:
+        return False
+    rw, rh = bw / w, bh / h
+    if min(rw, rh) < C.FACE_MIN_REL:
+        return False
+    if rw * rh > C.FACE_MAX_AREA:
+        return False
+    ar = rw / max(1e-6, rh)
+    if not (C.FACE_ASPECT_MIN <= ar <= C.FACE_ASPECT_MAX):
+        return False
+    cx = (float(f[0]) + bw / 2) / w
+    cy = (float(f[1]) + bh / 2) / h
+    m = C.FACE_EDGE_MARGIN
+    return (m <= cx <= 1.0 - m) and (m <= cy <= 1.0 - m)
+
+
 class FaceBackendYuNet:
     name = "YuNet"
 
@@ -72,7 +97,14 @@ class FaceBackendYuNet:
         _, faces = self._det.detect(frame)
         if faces is None or len(faces) == 0:
             return FaceState(found=False)
-        f = max(faces, key=lambda r: float(r[2]) * float(r[3]))
+        # 合理性筛选：只在"像人脸"的框里挑最大的。
+        # 不做这层过滤的话，墙上的图案、反光、抱枕都可能被判成脸，
+        # 而它们的中心常常贴边 → 归一化后 cx 直接打到 0 或 1 →
+        # 角色瞬间被甩到最边上。这是"没识别到头却在乱动"的一个来源。
+        cands = [f for f in faces if _plausible_face(f, w, h)]
+        if not cands:
+            return FaceState(found=False)
+        f = max(cands, key=lambda r: float(r[2]) * float(r[3]))
         x, y, bw, bh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
         # YuNet 的 5 个关键点：右眼、左眼、鼻尖、右嘴角、左嘴角
         pts = [(float(f[i]), float(f[i + 1])) for i in (4, 6, 8, 10, 12)]
@@ -390,6 +422,7 @@ class MotionTracker:
         self._vision_interval = self._base_interval
         self._vision_mode = "full"        # off / hand / body / full，由 shell 按游戏切换
         self._miss_streak = 0
+        self._vision_t = 0.0              # 上一次**真正推理**的时间（判断新鲜度用）
         self._prefer = prefer
         self._cap = None
         self._thread = None
@@ -494,7 +527,7 @@ class MotionTracker:
             #    · 连续检测不到目标时逐步拉长间隔（坐着只露头的人不会白白烧 CPU）；
             #    · 一旦检测到就立刻恢复高频。
             self._frame_i += 1
-            vf = self._vision
+            vf = self.get_vision()
             if self._engine is not None and self._vision_mode != "off" and \
                     self._frame_i % self._vision_interval == 0:
                 t0 = time.time()
@@ -515,6 +548,7 @@ class MotionTracker:
                 self._stats["n"] += 1
                 with self._lock:
                     self._vision = vf
+                    self._vision_t = time.time()
 
             # ---- 3) 合并：YuNet 定头部，Vision 补朝向与全身 ----
             if st.found and vf.pose.found:
@@ -568,8 +602,17 @@ class MotionTracker:
             return self._frame, self._state, list(self._hands)
 
     def get_vision(self) -> VisionFrame:
-        """取最新一帧的全身骨骼 + 手部关键点。"""
+        """
+        取最新一帧的全身骨骼 + 手部关键点。
+
+        **过期的帧按"什么都没有"返回。** 视觉引擎是按需降频跑的（丢检时还会
+        退避到 1/12 帧），两次推理之间会把上一帧一直交出去；如果这期间人已经
+        离开，消费者就会拿着那帧陈旧的 `found=True` 和抬臂数值，让角色在没人
+        做动作时继续"按键"。加一层新鲜度判断后，过期等同于没检测到。
+        """
         with self._lock:
+            if time.time() - self._vision_t > C.VISION_STALE_AFTER:
+                return VisionFrame(source="stale")
             return self._vision
 
     # ------------------------------------------------------------------ 模式

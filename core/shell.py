@@ -165,6 +165,7 @@ class Shell:
 
             if self.scene == "menu":
                 self.menu.info["fps"] = self.clock.get_fps()
+                self.menu.info["track"] = self._track_state()
                 self.menu.update(dt, inp)
                 if self.menu.chosen:
                     self.start_game(self.menu.chosen)
@@ -372,6 +373,23 @@ class Shell:
                 inp.hand_found = True
         return inp
 
+    def _track_state(self) -> str:
+        """
+        头部识别状态：track（正常）/ hold（短暂丢帧，输入冻结）/ lost（未识别，输入归零）。
+
+        HOLD 是防抖的关键：单帧漏检很常见，若直接按"丢失"处理，控制量会在帧
+        之间反复重启/停住，表现为角色自己在动。这里把三态显式暴露出来，
+        真机上能一眼看出状态机有没有按预期工作。
+        """
+        if not (self.tracker and self.tracker.ok):
+            return "lost"
+        hc = self.head_ctl
+        if hc.lost_t <= 0.0:
+            return "track"
+        if hc.lost_t <= C.HOLD_AFTER:
+            return "hold"
+        return "lost"
+
     def _update_lost(self, dt: float, inp: GameInput) -> None:
         cam_ok = bool(self.tracker and self.tracker.ok)
         if not cam_ok or inp.found:
@@ -529,12 +547,16 @@ class Shell:
         self.screen.blit(cap, (px, py + ph - 38))
         if not cam_ok:
             s, col = "● 键盘 / 鼠标", (245, 170, 150)
-        elif st.found:
-            n = len(self._hands)
-            s = f"● 已锁定头部" + (f"　手 x{n}" if n else "　未看到手")
-            col = (110, 230, 170) if n else (250, 210, 130)
         else:
-            s, col = "● 搜索头部…", (250, 200, 90)
+            state = self._track_state()
+            n = len(self._hands)
+            if state == "track":
+                s = "● 头部已锁定" + (f"　手 x{n}" if n else "　未看到手")
+                col = (110, 230, 170) if n else (250, 210, 130)
+            elif state == "hold":
+                s, col = "◐ 短暂丢帧 · 输入冻结", (250, 200, 90)
+            else:
+                s, col = "○ 未识别到头 · 输入归零", (245, 140, 130)
         U.text(self.screen, s, (px + 10, py + ph - 30), 20, col, bold=True)
         if cam_ok:
             info = f"{self.tracker.fps:.0f}fps"

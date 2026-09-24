@@ -113,13 +113,19 @@ class Menu:
                 self._page_anim = 0.0
                 self._on_move()
 
-        # 停留自动确认
-        self.dwell += dt
+        # 停留自动确认：**必须正在稳定识别到头才计时**。
+        # 之前是无条件累加，结果人走开了、或者转头看不见了，大厅会自己
+        # 一路翻页、自己进游戏 —— 这就是最典型的"没识别到头却还在乱动"。
+        if inp.found and not inp.jump:
+            self.dwell += dt
+        else:
+            self.dwell = 0.0
         if self.dwell >= C.MENU_DWELL and self.enter_t > C.MENU_ENTRY_TIME:
             self.confirm()
 
         # 抬头确认（切换后短暂锁定，防误触）
-        if inp.jump and self.cool <= 0 and self.enter_t > C.MENU_CONFIRM_LOCK:
+        # 同样要求识别中：假阳性的 jump 会把人直接送进游戏
+        if inp.found and inp.jump and self.cool <= 0 and self.enter_t > C.MENU_CONFIRM_LOCK:
             self.confirm()
 
         self.sel_f += (self.sel - self.sel_f) * min(1.0, dt * 9.0)
@@ -201,10 +207,16 @@ class Menu:
         cam_ok = self.info.get("cam_ok", False)
         hand_ok = self.info.get("hand_ok", False)
         if cam_ok:
-            tag = f"● {self.info.get('backend', '-')}"
-            if hand_ok:
-                tag += f" + {self.info.get('hand_backend', '-')}"
-            col = (110, 230, 170)
+            # 直接显示识别三态：人离开时大厅必须表现出"我不认识你了"，
+            # 而不是继续当作有人在操作（否则会自己翻页、自己进游戏）
+            tr = self.info.get("track", "track")
+            if tr == "track":
+                tag = f"● 已锁定 · {self.info.get('backend', '-')}"
+                col = (110, 230, 170)
+            elif tr == "hold":
+                tag, col = "◐ 短暂丢帧 · 输入冻结", (250, 200, 90)
+            else:
+                tag, col = "○ 未识别到头 · 已停止自动进入", (245, 140, 130)
         else:
             tag, col = "● 键盘 / 鼠标模式（未启用摄像头）", (250, 190, 110)
         img = U.render_text(tag, 22, col, True)

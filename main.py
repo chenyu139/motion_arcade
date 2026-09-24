@@ -48,6 +48,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="列出全部游戏后退出")
     ap.add_argument("--list-backends", action="store_true",
                     help="列出视觉后端在当前机器的可用性后退出")
+    ap.add_argument("--probe-secs", type=int, default=20, help="诊断模式跑多少秒")
     ap.add_argument("--probe", action="store_true",
                     help="诊断模式：跑 20 秒并把各后端可用性、检测率、耗时写入日志")
     args = ap.parse_args()
@@ -83,40 +84,136 @@ def main() -> int:
     return 0
 
 
+def probe_synthetic() -> int:
+    """
+    合成序列自检：不需要摄像头就能验证 HOLD / LOST 两条路径。
+
+    实机跑的时候镜头前可能一直没人（那样只会走 LOST 分支，HOLD 根本没被触发），
+    所以这里用一段脚本化的检测序列把两种情况都覆盖掉：
+        稳定识别 → 丢 3 帧（应冻结）→ 回来 → 丢很久（应立即归零）
+    """
+    from core.inputs import FaceState, HeadController
+
+    head = HeadController(C)
+    dt = 1.0 / 30.0
+
+    def face(cx=0.5, cy=0.45):
+        return FaceState(found=True, cx=cx, cy=cy)
+
+    for _ in range(C.CALIB_FRAMES + 2):
+        head.update(face(), dt)
+    for _ in range(40):
+        head.update(face(0.72), dt)                 # 推到满速右移
+    held = head.axis
+
+    ok_hold = True
+    for _ in range(3):
+        head.update(FaceState(found=False), dt)
+        ok_hold &= abs(head.axis - held) < 1e-12
+    ok_hold &= head.tracking
+
+    head.update(face(0.72), dt)                     # 检测回来
+    for _ in range(3):
+        head.update(face(0.72), dt)
+    ok_resume = head.axis > held - 0.05
+
+    for _ in range(30):                             # 长时间丢失
+        head.update(FaceState(found=False), dt)
+    ok_zero = (head.axis == 0.0 and head.jump is False and head.up == 0.0
+               and not head.tracking)
+
+    print("[probe] 合成序列自检（不需要摄像头）")
+    print(f"        丢 3 帧冻结，输出 {held:.3f} → 不变　　{'通过' if ok_hold else '不通过'}")
+    print(f"        检测恢复后继续跟随　　　　　　　{'通过' if ok_resume else '不通过'}")
+    print(f"        长时间丢失后立即归零　　　　　　{'通过' if ok_zero else '不通过'}")
+    return 0 if (ok_hold and ok_resume and ok_zero) else 1
+
+
 def run_probe(args) -> int:
     """
-    诊断模式：真机跑 N 秒，周期性打印检测统计。
+    诊断模式：真机跑 N 秒，打印检测统计与**输入状态机的实际行为**。
 
     之所以要这么个模式：真机画面截不到图（沙箱通常没有屏幕录制权限），
-    只能靠日志里的"检测率 / 关键点数 / 各环节耗时"来判断方案到底行不行。
+    只能靠日志判断方案到底行不行。
+
+    除了检测率与各环节耗时，这里还会**逐帧跑一遍三个控制器**，并统计
+    「判定为未识别、却仍有非零输出」的帧数 —— 这个数必须是 0，
+    也就是"没有识别到头的时候别乱动"在真机上的直接证据。
     """
     import time
+    from core.inputs import BodyController, HandController, HeadController
     from core.tracker import MotionTracker
+
+    print()
+    synth = probe_synthetic()
 
     tr = MotionTracker(args.cam, prefer=None if args.vision == "auto" else args.vision)
     if not tr.ok:
         print(f"[probe] 摄像头不可用：{tr.err}")
         return 1
     print(f"[probe] 视觉后端 {tr.hand_name}　人脸后端 {tr.backend_name}")
-    base = time.time()
-    last = base
+    print(f"[probe] 识别状态机：HOLD_AFTER={C.HOLD_AFTER}s　"
+          f"LOST_PAUSE_AFTER={C.LOST_PAUSE_AFTER}s　"
+          f"跑 {args.probe_secs}s，请自然坐好、中途可以故意转头离开")
+
+    head, hand, body = HeadController(C), HandController(C), BodyController(C)
+    stat = {"n": 0, "track": 0, "hold": 0, "lost": 0, "viol": 0}
+    dt = 1.0 / 60.0
+    t0 = time.time()
+    last = t0
     try:
-        while time.time() - base < 20:
-            time.sleep(1.0)
-            f, st, hands = tr.get()
+        while time.time() - t0 < args.probe_secs:
+            time.sleep(dt)
+            _f, st, hands = tr.get()
             vf = tr.get_vision()
-            p = vf.pose
-            rate = lambda v: f"{v:.0%}"                                  # noqa: E731
-            print(f"[probe] t={time.time() - base:4.1f}s  "
-                  f"cam {tr.fps:4.1f}fps  脸{'✓' if st.found else '·'}  "
-                  f"人体{'✓' if p.found else '·'}({p.coverage():2d}点)  "
-                  f"手{len(vf.hands)}  "
-                  f"face {tr.timings['face']:4.1f}ms vision {tr.timings['vision']:5.1f}ms  "
-                  f"| 举{inp_dbg(p)}")
+            head.update(st, dt)
+            hand.update(hands, dt)
+            body.update(vf.pose, dt)
+            inp = head.game_input()
+            inp = hand.apply(inp, hands)
+            inp = body.apply(inp, vf.pose)
+
+            # 与 shell._track_state 同一套判定
+            if head.lost_t <= 0.0:
+                state = "track"
+            elif head.lost_t <= C.HOLD_AFTER:
+                state = "hold"
+            else:
+                state = "lost"
+            stat["n"] += 1
+            stat[state] += 1
+            # 关键断言：判定为"未识别"时，头部来源的输出必须严格为 0
+            if state == "lost" and (inp.axis != 0.0 or inp.jump or inp.up != 0.0):
+                stat["viol"] += 1
+
+            now = time.time()
+            if now - last >= 1.0:
+                last = now
+                p = vf.pose
+                print(f"[probe] t={now - t0:4.1f}s  cam {tr.fps:4.1f}fps  "
+                      f"脸{'✓' if st.found else '·'}  "
+                      f"人体{'✓' if p.found else '·'}({p.coverage():2d}点)  "
+                      f"手{len(vf.hands)}  face {tr.timings['face']:4.1f}ms "
+                      f"vision {tr.timings['vision']:5.1f}ms")
+                print(f"          状态 {state:5s}  axis{inp.axis:+.2f}  "
+                      f"动作{'开' if inp.action else '关'}  "
+                      f"found={'是' if inp.found else '否'}  "
+                      f"| 举{inp_dbg(p)}")
     except KeyboardInterrupt:
         pass
     finally:
         tr.close()
+
+    n = max(1, stat["n"])
+    print("\n[probe] 小结（共 %d 帧）" % stat["n"])
+    print(f"        识别中 {stat['track']:5d} 帧 {stat['track'] / n:6.1%}")
+    print(f"        短暂丢帧 {stat['hold']:3d} 帧 {stat['hold'] / n:6.1%}  ← 输入冻结，无可见变化")
+    print(f"        未识别 {stat['lost']:5d} 帧 {stat['lost'] / n:6.1%}  ← 输入归零")
+    verdict = "通过" if stat["viol"] == 0 and synth == 0 else \
+        f"不通过（未识别期间非零输出 {stat['viol']} 帧）"
+    print(f"        未识别期间仍有非零输出的帧数：{stat['viol']}　→ {verdict}")
+    if stat["hold"] == 0 and stat["track"] > 0:
+        print("        （本次没有出现短暂丢帧，属于理想情况；HOLD 的防抖逻辑见 tools/test_input.py）")
     return 0
 
 
