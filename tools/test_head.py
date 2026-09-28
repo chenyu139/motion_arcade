@@ -99,6 +99,23 @@ def _axis_for_yaw(y: float) -> float:
     return hc.axis
 
 
+def _axis_peak(y: float, secs: float = 0.5) -> float:
+    """
+    **瞬时**转头（持续 secs 秒）里 |axis| 的峰值。
+
+    为什么还要这个：持续转头会被中性位自适应吸收（见下文），
+    所以 `_axis_for_yaw` 那种"settle 120 帧"只能反映稳态。
+    而玩家在游戏/大厅里的转头都是短促的（0.2~0.6 秒），
+    手感由这段瞬态决定 —— 灵敏度回归必须测这一段。
+    """
+    hc = calibrated()
+    peak = 0.0
+    for _ in range(int(secs / DT)):
+        hc.update(face(cx=0.5, yaw=y), DT)
+        peak = max(peak, abs(hc.axis))
+    return peak
+
+
 def test_yaw_controls_axis() -> None:
     """
     摇头必须能控制横向 —— 转头时脸框中心几乎不动。
@@ -109,16 +126,25 @@ def test_yaw_controls_axis() -> None:
         微动（≈6° 以内）→ 不产生输出
         自然转头        → 产生明显但不饱和的输出
         大幅转头        → 接近满速
+
+    上界（原 0.75）在用户两次反馈"灵敏度不够"之后**有意放宽到 0.85**。
+    放宽的依据是"死区没动"：噪声地板一点没变（微动仍为 0.000），
+    饱和点仍在 25° 附近，而 12° 的瞬时输出只有 0.25 —— 
+    离第一版"12° 就打满 0.98"的病态还差得远，所以这条放宽是安全的。
     """
     print("\n[2] 只摇头（脸框中心不动）也要产生横向控制量，且灵敏度要合理")
     small = _axis_for_yaw(0.16)          # ≈ 4.3°，呼吸/说话级别的微动
     mid = _axis_for_yaw(0.70)            # ≈ 19°，舒适的自然转头
     big = _axis_for_yaw(1.40)            # ≈ 41°，大幅转头
+    flick12 = _axis_peak(0.44, 0.5)      # ≈ 12°，短促一偏
     print(f"      yaw 0.16(≈4°) → {small:+.3f}")
     print(f"      yaw 0.70(≈19°) → {mid:+.3f}")
     print(f"      yaw 1.40(≈41°) → {big:+.3f}")
+    print(f"      yaw 0.44(≈12°) 甩 0.5 秒 → 峰值 {flick12:+.3f}")
     check("微动被死区挡住（< 0.05）", abs(small) < 0.05, f"{small:+.3f}")
-    check("自然转头有明显输出（0.35~0.75）", 0.35 < mid < 0.75, f"{mid:+.3f}")
+    check("自然转头有明显输出（0.35~0.85）", 0.35 < mid < 0.85, f"{mid:+.3f}")
+    check("12° 的短促偏头不得打满（< 0.55）", flick12 < 0.55, f"{flick12:+.3f}")
+
     check("大幅转头接近满速（> 0.85）", big > 0.85, f"{big:+.3f}")
     check("方向相反", _axis_for_yaw(-0.70) < -0.35, f"{_axis_for_yaw(-0.70):+.3f}")
 
@@ -640,6 +666,73 @@ def test_menu_selection_stable() -> None:
     print(f"      持续左右摇头 8 秒 → 选中项变化 {changed2} 次")
     check("真实摇头仍能正常切换（≥ 3 次）", changed2 >= 3, f"变化 {changed2} 次")
 
+    # ---- "切一格要转多少度" —— 这才是用户感知到的灵敏度 ----
+    # 用户两次反馈"偏头灵敏度不够"，指的就是这个数。用二分找出
+    # "甩 0.6 秒刚好能切换"的临界转头角度，把上下界都钉住：
+    # 太小 → 误触；太大 → 用户觉得转不动。
+    def _needs_change(yaw: float, secs: float = 0.6) -> bool:
+        hc = calibrated()
+        m = Menu({"cam_ok": True, "hand_ok": True, "backend": "YuNet",
+                  "hand_backend": "Vision", "fps": 60.0, "track": "track"})
+        m.reset()
+        first = m.sel
+        for _ in range(int(secs / DT)):
+            hc.update(face(cx=0.5, yaw=yaw), DT)
+            inp = hc.game_input()
+            inp.found = True
+            m.update(DT, inp)
+        return m.sel != first
+
+    lo, hi = 0.0, 1.40
+    for _ in range(20):
+        mid_y = (lo + hi) / 2
+        if _needs_change(mid_y):
+            hi = mid_y
+        else:
+            lo = mid_y
+    deg = math.degrees(math.asin(min(1.0, hi / 2.14)))
+    print(f"      甩 0.6 秒切一格所需的转头角度 ≈ {deg:.1f}°")
+    check("不算太迟钝：≤ 18° 就能切一格", deg <= 18.0, f"{deg:.1f}°")
+    check("也不算太灵：≥ 10° 才切（防误触）", deg >= 10.0, f"{deg:.1f}°")
+
+
+
+def test_held_look_up_not_learned() -> None:
+    """
+    抬头保持期间，俯仰基线不得被自适应学走 —— 否则"游戏里再也抬不起头"。
+
+    这条是**灵敏度调高之后才出现的危险带**。按下动作键所需的抬头幅度
+    从 p_raw 0.27 降到 0.23（PITCH_FULL_SCALE 0.52→0.43），
+    而俯仰自适应门限仍是 0.30 —— 也就是说"刚好能按下动作键"的那一段
+    现在落在了门限**以内**。若没有"动作键按住就冻结基线"这条，
+    玩家保持抬头 3 秒，基线就会被学成新的休息位。
+
+    同时反向断言：不触发动作键的小幅抬头**仍然要被吸收**（自愈不能被一起关掉）。
+    """
+    print("\n[23] 抬头保持期间基线不得被学走（新灵敏度的危险带）")
+    # 取一个**可靠按下**动作键的幅度（阈值 +0.10 余量；刚好卡在 0.42 上会因
+    # 浮点与迟滞而时灵时不灵，那不是这条要测的东西）
+    hold = C.PITCH_DEADZONE + (C.JUMP_ON + 0.10) * (C.PITCH_FULL_SCALE - C.PITCH_DEADZONE)
+    band = "落在门限内 → 全靠『按住就冻结基线』保护" \
+        if hold < C.NEUTRAL_ADAPT_GATE_P else "高于门限，本就不会被吸收"
+    print(f"      保持 p_raw={hold:.3f}（自适应门限 {C.NEUTRAL_ADAPT_GATE_P}，{band}）")
+    hc = calibrated()
+    hc = settle(hc, face(pitch=hold), int(3.0 / DT))
+    print(f"      保持 3 秒 → 基线 pitch={hc.npitch:+.3f}　"
+          f"jump={'按住' if hc.jump else '松开'}")
+    check("抬头保持 3 秒后基线未被学走（|Δ| < 0.03）", abs(hc.npitch) < 0.03,
+          f"{hc.npitch:+.3f}")
+    check("保持期间动作键一直在按住", hc.jump)
+
+    hc = settle(hc, face(pitch=0.0), int(1.0 / DT))       # 松手回落
+    hc = settle(hc, face(pitch=hold), 20)                 # 再抬头
+    check("松手之后再抬头仍能触发", hc.jump)
+
+    hc2 = calibrated()
+    hc2 = settle(hc2, face(pitch=0.16), int(3.0 / DT))
+    print(f"      不触发动作键的 p_raw=0.16 → 基线 pitch={hc2.npitch:+.3f}（应被吸收）")
+    check("不触发动作键的小幅抬头仍被当作休息位吸收（自愈仍有效）",
+          hc2.npitch > 0.05, f"{hc2.npitch:+.3f}")
 
 
 def test_config_refs() -> None:
@@ -678,6 +771,7 @@ def main() -> int:
     test_pose_gate()
     test_odd_displacement_guard()
     test_yaw_pitch_decoupling()
+    test_held_look_up_not_learned()
     test_baseline_self_heal()
     test_adapt_channels_independent()
     test_noise_does_not_chatter()

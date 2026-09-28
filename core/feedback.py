@@ -80,7 +80,7 @@ class Feedback:
         """
         if delta <= 0:
             return
-        self._bump_combo()
+        self._bump_combo(delta)
 
         k = min(self.combo, 9)
         size = UI.T_M + min(34, delta) + k * 4
@@ -119,7 +119,7 @@ class Feedback:
                 life=2.0, size=8.0, fade=True)
         self.pulse = max(self.pulse, 0.7)
 
-    def _bump_combo(self) -> None:
+    def _bump_combo(self, amt: int) -> None:
         if self.combo_t > 0:
             self.combo = min(99, self.combo + 1)
         else:

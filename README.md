@@ -69,8 +69,10 @@ Python 源码在包外，改完直接 `open` 即可（可用 `codesign --verify 
 | `--no-cam` | 不用摄像头；鼠标位置映射手部，按住左键 = 握拳 |
 | `--game KEY` | 启动后直接进入指定游戏（如 `mario`） |
 | `--cam N` | 指定摄像头索引，默认 0 |
-| `--backend auto\|mediapipe` | 人脸检测后端；`mediapipe` 额外给"张嘴"触发（本机不可用，见下） |
+| `--vision auto\|apple\|mediapipe\|onnx\|opencv` | 指定视觉后端；默认 `auto` 按平台自动选（macOS→apple，Win/Linux→mediapipe 或 onnx） |
 | `--list` | 打印全部游戏后退出 |
+| `--list-backends` | 打印本机可用的视觉后端后退出 |
+| `--probe [--probe-secs N]` | 诊断模式：真机跑 N 秒，输出检测率、耗时、抖动统计 |
 
 ---
 
@@ -139,7 +141,7 @@ Python 源码在包外，改完直接 `open` 即可（可用 `codesign --verify 
 ### 大厅
 
 - 头部左右 → 切卡片（到页边自动翻页）
-- 抬头 → 进入；或在卡片上**停留 2.4 秒**自动进入（卡片右下角有进度环）
+- **抬头 → 进入**（唯一的进入方式；没有识别到头时不会误触发）
 - 键盘：`←→↑↓` 移动、`回车` 进入、`1-9` 快速选
 
 ### 手部
@@ -265,8 +267,17 @@ LOST      超过 0.15s      → 轴量立即归零、动作键立即清零（不
 **验证方式**（不是靠感觉）：
 
 ```bash
-# 行为断言：24 项，覆盖冻结/归零/闪烁/重捕获限速/动作门控/手势误触/大厅
+# 行为断言：25 项，覆盖冻结/归零/闪烁/重捕获限速/动作门控/手势误触/大厅抬头进入
 .venv/bin/python tools/test_input.py
+
+# 头部控制：71 项，覆盖距离无关性/摇头与平移两路/灵敏度标定/静止噪声/尖峰抑制
+.venv/bin/python tools/test_head.py
+
+# 游戏层不变量：6 项，含"静止时受控物不得自作主张"（川超足球瞄准点回归）+ 20 款游戏静止输入
+.venv/bin/python tools/test_games.py
+
+# 反馈与 HUD 链路：15 项，含 20 款游戏逐个跑 60 帧（这条路上曾崩过，见 run.log）
+.venv/bin/python tools/test_feedback.py
 
 # 真机：合成序列自检 + 实机跑，最后统计"未识别期间仍有非零输出的帧数"
 .venv/bin/python main.py --probe --probe-secs 20
@@ -779,6 +790,17 @@ F0000 graph_service.h:139] Check failed: service_ Service is unavailable.
   "检测到手"那条分支上才会执行 —— 于是**一检测到手就 AttributeError 崩**，
   平时完全看不出来。这类错误静态就能查，现在由 `tools/test_input.py`
   的第 7 项守着（扫描 core/ 与 games/ 下全部 `C.XXX` 引用）。
+- **游戏的"自动行为"要按同一把尺子审**。川超足球里有一条"玩家不操作时让瞄准点
+  250px/s 来回扫"（注释写着"避免玩家完全不参与"），于是玩家看到的是
+  **头一动没动，瞄准点自己在球门里滑**，直接读成"识别飘了"。它和已经删掉的
+  大厅"停留自动进入"、以及输入层的 LOST 归零尾巴是同一类问题：
+  **静止时任何受控物都不许自作主张**。外壳层的测试看不到游戏自己的自动行为，
+  所以单独有 `tools/test_games.py` 按游戏断言（含"别把真实操作一起删掉"的反向断言）。
+- **HUD 数值驱动的反馈链路，只有真进游戏才会被执行**。`core/feedback.py` 里
+  `_bump_combo` 引用了不存在的 `amt`（调用方手里有 `delta` 却没传），
+  单元测试全过、一进游戏加分就 `NameError` 整个进程退出；`.app` 没有终端，
+  现象只是"窗口突然没了"。现在由 `tools/test_feedback.py` 压着
+  （20 款游戏 × 60 帧，人为推高分数逼它走这条路）。
 
 ---
 
@@ -799,8 +821,17 @@ cd motion_arcade
 # 性能体检
 .venv/bin/python tools/perf.py
 
-# 输入层行为断言（识别状态机 / 动作门控 / 手势误触 / 大厅自动进入）
+# 输入层行为断言（识别状态机 / 动作门控 / 手势误触 / 大厅抬头进入）
 .venv/bin/python tools/test_input.py
+
+# 头部控制敏感度 / 静止噪声 / 转头耦合（71 项）
+.venv/bin/python tools/test_head.py
+
+# 反馈与 HUD 链路（15 项，含 20 款游戏各 60 帧）
+.venv/bin/python tools/test_feedback.py
+
+# 游戏层不变量：静止时受控物不得自作主张（6 项）
+.venv/bin/python tools/test_games.py
 
 # 真机：识别状态机 + 检测率 + 各环节耗时
 .venv/bin/python main.py --probe --probe-secs 20

@@ -76,7 +76,6 @@ class FootballGame(BaseGame):
         self.best_combo = 0
         self.history: List[str] = []
         self.aim_x = (GOAL_L + GOAL_R) / 2
-        self.aim_dir = 1
         self.aim_y = 0.55            # 0 上角 → 1 下角
         self.keeper_x = (GOAL_L + GOAL_R) / 2
         self.keeper_tx = self.keeper_x
@@ -172,16 +171,17 @@ class FootballGame(BaseGame):
 
         if self.phase == "aim":
             # 横向：头部 axis 直接驱动（带惯性更跟手）
-            self.aim_x += inp.xc * 1080.0 * dt
-            # 不操作时缓慢自动扫动，避免玩家完全不参与
-            if abs(inp.xc) < 0.10:
-                self.aim_x += self.aim_dir * 250.0 * dt
+            self.aim_x += inp.xc * C.FB_AIM_SPEED * dt
+            # 这里曾有一条"不操作时缓慢自动扫动"（250px/s 来回扫），本意是
+            # "避免玩家完全不参与"。但它和整套输入的立场是矛盾的：
+            # 玩家看到的是**头一动没动，瞄准点自己在球门里滑来滑去**，
+            # 直接读成"识别飘了 / 乱动"。用户原话："好像头没动球也在动"。
+            # 所以删掉 —— 静止时任何受控物都不许自作主张，这条原则在
+            # 大厅（停留下不动）、头部输入（LOST 归零）上都已经执行过了。
             if self.aim_x < GOAL_L + 56:
                 self.aim_x = GOAL_L + 56
-                self.aim_dir = 1
             elif self.aim_x > GOAL_R - 56:
                 self.aim_x = GOAL_R - 56
-                self.aim_dir = -1
             # 纵向：抬头抬高 → 打上角
             self.aim_y += (U.clamp(0.62 - inp.up * 0.72, 0.16, 0.94) - self.aim_y) * min(1.0, dt * 5.0)
 
