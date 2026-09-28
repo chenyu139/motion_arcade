@@ -829,6 +829,20 @@ F0000 graph_service.h:139] Check failed: service_ Service is unavailable.
   单元测试全过、一进游戏加分就 `NameError` 整个进程退出；`.app` 没有终端，
   现象只是"窗口突然没了"。现在由 `tools/test_feedback.py` 压着
   （20 款游戏 × 60 帧，人为推高分数逼它走这条路）。
+- **`git filter-branch` 会顺手删掉工作区里被剔除的文件**。想"把截图从历史里剔掉、
+  文件留在本机"时，`--index-filter 'git rm -r --cached …'` 看着只动索引，
+  但 filter-branch 结束后会 `checkout -f` 到重写后的 HEAD —— 那些文件于是从
+  工作区一起消失了（本次真踩到：`screenshots/` 39MB 与三个 `.task` 模型）。
+  **动手前先把要剔除的路径备份到仓库外**，重写后再放回来；
+  这类"删历史不删文件"的诉求，安全顺序永远是：备份 → 重写 → 还原 → 核对。
+  核对要用文件清单逐个比，不要只看 `git status`（被 ignore 的路径删了它也不报）。
+  另外 `--prune-empty` 会把"只动了被剔除文件"的提交整条丢掉（本次少了一条只加截图的
+  `docs:` 提交），这是预期行为，但要知道。
+- **`.git` 涨到 200MB+ 通常是"把产物提交进去了"**。本项目历史上 183MB 是
+  `screenshots/`（`tools/shots.py` 的产物，可随时重新生成）、19MB 是 MediaPipe 的
+  `.task` 模型。剔掉后 `.git` 从 **207MB 降到 9MB**。判断方法：
+  `git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)'`
+  按 `%(rest)` 分组求和，一眼就能看出是谁占的。
 
 ---
 
