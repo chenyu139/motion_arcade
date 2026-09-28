@@ -22,8 +22,8 @@ core/menu.py
     │  [卡][卡][卡][卡][卡]                         │  （只留图标与名称）
     └──────────────────────────────────────────────┘
 
-**交互完全没变**：左右平移选卡片、抬头进入、停留自动进入、键盘 ←→/回车/
-数字键。改的只是信息怎么摆 —— 详细说明只出现在英雄区一次，卡片回归"选项"。
+**交互**：左右平移选卡片、抬头确认进入（已去掉「停留自动进入」）、
+键盘 ←→/回车/数字键。改的只是信息怎么摆 —— 详细说明只出现在英雄区一次，卡片回归"选项"。
 
 背景也不再是纯色 + 网格：换成黄昏天空 + 星点 + 四川地标剪影 + 雾 + 地面，
 让大厅本身就是一个"游戏世界"。
@@ -67,7 +67,6 @@ class Menu:
         self.sel = 0
         self.sel_f = 0.0
         self.cool = 0.0
-        self.dwell = 0.0
         self.enter_t = 0.0
         self.page = 0
         self.chosen: Optional[str] = None
@@ -124,7 +123,6 @@ class Menu:
         self._dir = 0
         self._dir_t = 0.0
         self.enter_t = 0.0
-        self.dwell = 0.0
         self.cool = 0.4
 
     def _card_rect(self, i: int) -> pygame.Rect:
@@ -166,23 +164,23 @@ class Menu:
             if moved:
                 self.cool = C.MENU_SWITCH_COOLDOWN
                 self.sel = (self.sel + moved) % self.n
-                self.dwell = 0.0
                 self._page_anim = 0.0
-                self._on_move()
+            self._on_move()
 
-        # 停留自动确认：**必须正在稳定识别到头才计时**。
-        # 之前是无条件累加，结果人走开了、或者转头看不见了，大厅会自己
-        # 一路翻页、自己进游戏 —— 这就是最典型的"没识别到头却还在乱动"。
-        if inp.found and not inp.jump:
-            self.dwell += dt
-        else:
-            self.dwell = 0.0
-        if self.dwell >= C.MENU_DWELL and self.enter_t > C.MENU_ENTRY_TIME:
-            self.confirm()
-
-        # 抬头确认（切换后短暂锁定，防误触）
-        # 同样要求识别中：假阳性的 jump 会把人直接送进游戏
-        if inp.found and inp.jump and self.cool <= 0 and self.enter_t > C.MENU_CONFIRM_LOCK:
+        # 确认进入：**只认「抬头」这一个明确动作**，不再有「停留 N 秒自动进入」。
+        #
+        # 原来有一条 dwell 自动确认（停住不动 2.4 秒就进游戏）。本意是照顾不想
+        # 做动作的玩家，但实际后果是：玩家只是站着看看有哪些游戏，就自己进去了 ——
+        # 这和「头没动却自己在选」是同一类体验伤害，都是「我没下指令它却动了」。
+        # 大厅的自动行为必须全部去掉。
+        #
+        # 三道门槛一起保证「抬头」是真的抬头：
+        #   inp.found —— 必须正在稳定识别到头（假阳性不认）
+        #   cool      —— 刚切过格子时不认（防切换动作带的尾巴）
+        #   enter_t   —— 刚进大厅的一小段时间不认（防还没看清就进去了）
+        # 上游的起振门限（AXIS_ARM）与动作键迟滞还会再挡掉单帧尖峰。
+        if (inp.found and inp.jump and self.cool <= 0
+                and self.enter_t > C.MENU_CONFIRM_LOCK):
             self.confirm()
 
         self.sel_f += (self.sel - self.sel_f) * min(1.0, dt * 9.0)
@@ -196,14 +194,12 @@ class Menu:
         if self.chosen:
             return
         self.sel = (self.sel + d) % self.n
-        self.dwell = 0.0
         self._page_anim = 0.0
         self._on_move()
 
     def pick(self, i: int) -> None:
         if 0 <= i < self.n:
             self.sel = i
-            self.dwell = 0.0
             self._on_move()
             self.confirm()
 
@@ -322,14 +318,9 @@ class Menu:
         btn = pygame.Rect(h.right - 372, h.y + 56, 340, 148)
         UI.big_button(surf, btn, "抬 头 开 始", accent, t=self.t, hot=True,
                       size=UI.T_L, sub="或按回车")
-        # 停留进度 + 序号
-        pct = U.clamp(self.dwell / C.MENU_DWELL, 0, 1)
-        bar = pygame.Rect(btn.x, btn.bottom + 22, btn.w, 12)
-        pygame.draw.rect(surf, (52, 44, 96), bar, border_radius=6)
-        if pct > 0.01:
-            pygame.draw.rect(surf, accent, (bar.x, bar.y, int(bar.w * pct), bar.h),
-                             border_radius=6)
-        UI.text(surf, f"{self.sel + 1} / {self.n}", (btn.centerx, btn.bottom + 62),
+        # 序号。这里原本是一条「停留进度条」—— 它服务的自动进入已经去掉，
+        # 进度条也就没有意义（留着反而暗示「再等一会儿会自己进去」）。
+        UI.text(surf, f"{self.sel + 1} / {self.n}", (btn.centerx, btn.bottom + 40),
                 UI.T_XS, UI.PAPER_DIM, center=True)
 
     # ------------------------------------------------------------------ 卡片
@@ -396,5 +387,5 @@ class Menu:
         玩家站在电视前不会看，也不需要看 —— 键盘提示移到暂停面板即可。
         """
         UI.pill(surf, (C.DESIGN_W // 2, C.DESIGN_H - 42),
-                "左右平移选游戏　·　抬头进入　·　停住 2 秒自动进入",
+                "左右平移选游戏　·　抬头确认进入",
                 UI.SURFACE, size=UI.T_XS, alpha=192, height=52, pad=44)

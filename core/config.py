@@ -45,6 +45,11 @@ CENTER = (DESIGN_W // 2, GAME_TOP + GAME_H // 2)
 # 左下角摄像头预览面板（游戏请避开）
 PREVIEW_W = 352
 PREVIEW_H = 306
+# 玩家卡片里的摄像头画面刷新率。
+# 从 BGR numpy 造一张 pygame 表面要 4~5ms（含一次缩放 + 一次字节序转换），
+# 每帧都做会吃掉 16.7ms 预算的四分之一。降到 20Hz 后均摊 < 1ms，
+# 而玩家对"镜子里自己的画面"远没有对游戏画面那么敏感，看不出差别。
+CAM_PREVIEW_HZ = 20.0
 PREVIEW_X = 28
 PREVIEW_Y = GAME_BOT - 18 - PREVIEW_H
 PREVIEW_RECT = (PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H)
@@ -323,9 +328,9 @@ MENU_SWITCH_TH = 0.52
 MENU_SWITCH_HOLD = 0.10
 MENU_SWITCH_COOLDOWN = 0.40
 MENU_CONFIRM_LOCK = 0.55
-# 停留自动进入。从 2.4s 放宽到 3.6s：2.4 秒对"站着看一眼有哪些游戏"太短，
-# 玩家会觉得"我还没选它就自己进去了"。英雄区有进度条，看得见还差多久。
-MENU_DWELL = 3.6
+# 注：曾有一条「停留 N 秒自动进入」（MENU_DWELL），已**删除**。
+# 它和「头没动却自己在选」是同一类体验伤害 —— 我没下指令它却动了。
+# 大厅的自动行为已全部去掉，进入游戏只认「抬头」这个明确动作。
 MENU_ENTRY_TIME = 0.9
 # 大厅从 4×2 改成 5×2：卡片变小、让位给上方的"英雄区"。
 # 英雄区承担选中游戏的详细信息（大图标/说明/难度/开始按钮），

@@ -202,25 +202,41 @@ def test_hand_pinch_needs_arm() -> None:
     check("重新捕获一直握着的手不误触发", fired2 == 0, f"误触发 {fired2} 次")
 
 
-def test_menu_dwell_gated() -> None:
-    print("\n[6] 大厅「停留自动进入」必须随识别状态清零")
+def test_menu_confirm_only_by_look_up() -> None:
+    """
+    大厅**只能靠「抬头」进入游戏**。
+
+    这里锁的是用户明确提出的要求：「没有抬头不要自动进入游戏」。
+
+    原来的实现有一条 dwell 自动确认（停住 2.4 秒就进）。它和"头没动却自己在选"
+    是同一类体验伤害 —— 玩家只是站着看看有哪些游戏，就自己进去了。
+    所以这条测试是**反向断言**：站多久都不许进，只有抬头才行。
+    """
+    print("\n[6] 大厅只能靠「抬头」进入：停留不得自动进入")
     pygame.init()
     pygame.display.set_mode((320, 240))
     import games  # noqa: F401  导入即注册
     from core.menu import Menu
 
     m = Menu({"cam_ok": True, "hand_ok": True, "backend": "test",
-              "hand_backend": "-", "fps": 60.0, "track": "lost"})
+              "hand_backend": "-", "fps": 60.0, "track": "track"})
 
-    # 没识别到头：跑满 3 倍 MENU_DWELL，绝不能自己进游戏
+    # 1) 稳定识别但完全不抬头，站 30 秒 —— 绝不能自己进游戏
+    still = GameInput()
+    still.found = True
+    for _ in range(int(30.0 / DT)):
+        m.update(DT, still)
+    check("稳定识别但不抬头：站 30 秒也不会进入", m.chosen is None,
+          f"chosen={m.chosen!r}")
+
+    # 2) 没识别到头：同样不能进
     dead = GameInput()
     dead.found = False
-    for _ in range(int(C.MENU_DWELL * 3 / DT)):
+    for _ in range(int(10.0 / DT)):
         m.update(DT, dead)
-    check("未识别到头时不会自动进入游戏", m.chosen is None, f"chosen={m.chosen!r}")
-    check("未识别到头时停留计时被清零", m.dwell == 0.0, f"dwell={m.dwell:.2f}")
+    check("未识别到头时不会进入", m.chosen is None, f"chosen={m.chosen!r}")
 
-    # 没识别到头但抬头信号为真（假阳性）：也不能进
+    # 3) 没识别到头但抬头信号为真（假阳性）→ 不能进
     fake = GameInput()
     fake.found = False
     fake.jump = True
@@ -229,14 +245,19 @@ def test_menu_dwell_gated() -> None:
     check("未识别到头时的假抬头信号不会误进入", m.chosen is None,
           f"chosen={m.chosen!r}")
 
-    # 正常识别且停留够久 → 应当自动进入（原有演示便利保留）
-    live = GameInput()
-    live.found = True
-    for _ in range(int((C.MENU_DWELL + 1.0) / DT)):
-        m.update(DT, live)
-    check("稳定识别 + 停留够久仍会自动进入（演示便利保留）",
-          m.chosen is not None, f"chosen={m.chosen!r}")
+    # 4) 刚进大厅的锁定窗口内抬头不算（防"还没看清就进去了"）
+    m2 = Menu({"cam_ok": True, "hand_ok": True, "backend": "test",
+               "hand_backend": "-", "fps": 60.0, "track": "track"})
+    up = GameInput()
+    up.found = True
+    up.jump = True
+    m2.update(DT, up)
+    check("刚进大厅的锁定期内抬头不生效", m2.chosen is None, f"chosen={m2.chosen!r}")
 
+    # 5) 过了锁定期 + 抬头 → 必须能进（不能把交互也堵死）
+    for _ in range(int((C.MENU_CONFIRM_LOCK + 0.4) / DT)):
+        m2.update(DT, up)
+    check("过了锁定期后抬头可以进入", m2.chosen is not None, f"chosen={m2.chosen!r}")
 
 
 def test_config_refs() -> None:
@@ -279,7 +300,7 @@ def main() -> int:
     test_reacquire_step_limited()
     test_body_action_gated()
     test_hand_pinch_needs_arm()
-    test_menu_dwell_gated()
+    test_menu_confirm_only_by_look_up()
     test_config_refs()
     print("\n" + "=" * 68)
     print(f"结果：{_ok} 通过 / {_fail} 失败")

@@ -27,8 +27,10 @@ import math
 import os
 import sys
 import time
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
 import pygame
 
@@ -122,6 +124,12 @@ class Shell:
         self.fade = 0.0
         self.toast = ""
         self._prev_frame = None
+        # 摄像头预览表面：**按目标尺寸分别缓存**。
+        # 大厅光球（132）和游戏内卡片（328×228）尺寸不同，共用一个字段会互相
+        # 覆盖 —— 现在两个场景不会同帧出现所以看不出问题，但那是隐藏耦合，
+        # 一旦以后要同屏显示就会错位。按尺寸分桶就没有这个隐患。
+        self._cam_cache: dict = {}
+        self._cam_acc = 1.0
         self._hands: List[HandState] = []
         # HUD 的"数值变化 → 弹一下"所需的状态
         self._hud_prev: dict = {}
@@ -633,26 +641,97 @@ class Shell:
         但"玩家自己在画面里"这件事在大厅同样重要（否则第一屏又变成了工具界面）。
         所以这里放一个紧凑版：状态一眼可见，又不遮挡任何一张卡。
         """
-        cam = bool(self.tracker and self.tracker.ok)
-        state = self._track_state() if cam else "track"
-        self.avatar.draw_ring(self.screen, 648, 56, 76, state, self._t)
-        self.avatar.draw_head(self.screen, 648, 56, 52)
+        cam_ok = bool(self.tracker and self.tracker.ok)
+        state = self._track_state() if cam_ok else "track"
+        orb = self._cam_preview(132, 132) if cam_ok else None
+        # 位置（508, 52）：标题与副标题占 x<420，状态胶囊在右端，
+        # 这一带是页眉里唯一干净的空档 —— 放在 648 会顶到英雄区上沿。
+        self.avatar.draw_cam_orb(self.screen, 516, 52, 104, orb,
+                                 self._face_in_preview((132, 132))
+                                 if orb is not None else None, self._t, state)
         self.avatar.draw_particles(self.screen, 648, 56, 150)
+
+    def _cam_preview(self, w: int, h: int) -> Optional[pygame.Surface]:
+        """
+        把最新一帧摄像头画面缩成预览表面（限频 + 复用）。
+
+        为什么必须限频：把 BGR 的 numpy 帧变成 pygame 表面要走
+        「缩放 + 通道序转换 + 拷贝」，实测 4~5ms —— 每帧都做就吃掉 16.7ms
+        预算的四分之一，而这个窗口只是"让玩家看见自己在画面里"。
+        降到 CAM_PREVIEW_HZ（20Hz）之后均摊不到 1ms，肉眼分辨不出来。
+        """
+        frame = self._prev_frame
+        if frame is None:
+            return None
+        key = (int(w), int(h))
+        slot = self._cam_cache.get(key)
+        self._cam_acc += self._dt
+        need = (slot is None
+                or self._cam_acc >= 1.0 / max(1.0, C.CAM_PREVIEW_HZ))
+        if need:
+            self._cam_acc = 0.0
+            try:
+                fh, fw = frame.shape[:2]
+                # **等比裁剪再缩放**，而不是直接拉成目标尺寸。
+                # 摄像头是 640×480（1.33:1）、卡片画面区是 328×228（1.44:1），
+                # 直接 resize 会把脸横向拉宽 8% —— 单看不明显，但它会让"镜子里的我"
+                # 有一点点不对劲，而这正是玩家最容易察觉的那类问题。
+                ta = w / max(1.0, h)
+                if fw / fh > ta:                     # 源更宽 → 裁两侧
+                    nw = max(2, int(round(fh * ta)))
+                    x0, y0, nh = (fw - nw) // 2, 0, fh
+                else:                                # 源更高 → 裁上下
+                    nh = max(2, int(round(fw / ta)))
+                    x0, y0, nw = 0, (fh - nh) // 2, fw
+                crop = frame[y0:y0 + nh, x0:x0 + nw]
+                small = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
+                rgb = np.ascontiguousarray(small[:, :, ::-1])
+                surf = pygame.image.frombuffer(rgb.tobytes(), (w, h), "RGB")
+                # 裁剪参数和表面一起缓存：头部光环的坐标必须按同一个变换
+                # 重映射，否则环会偏离真实头部（偏得还很隐蔽 —— 只在人脸靠边时明显）。
+                slot = (surf.convert(), (x0, y0, nw, nh, fw, fh))
+                self._cam_cache[key] = slot
+            except Exception:                                    # noqa: BLE001
+                return slot[0] if slot else None
+        return slot[0] if slot else None
+
+    def _face_in_preview(self, size) -> FaceState:
+        """把 FaceState 的坐标从"整帧"重映射到"裁剪后的预览区"。"""
+        st = self._face
+        slot = self._cam_cache.get((int(size[0]), int(size[1])))
+        crop = slot[1] if slot else None
+        if st is None or crop is None or not st.found:
+            return st
+        x0, y0, nw, nh, fw, fh = crop
+        k = fw / max(1, nw)             # 尺度相对放大倍数
+        return replace(
+            st,
+            cx=(st.cx * fw - x0) / max(1, nw),
+            cy=(st.cy * fh - y0) / max(1, nh),
+            w=st.w * k, h=st.h * k)
 
     def _draw_player_card(self) -> None:
         """左下角玩家卡片（卡通化身 + 识别位置）。原始画面见 _draw_debug。"""
         r = pygame.Rect(C.PREVIEW_X, C.PREVIEW_Y, C.PREVIEW_W, C.PREVIEW_H)
+        cam_ok = bool(self.tracker and self.tracker.ok)
+        state = self._track_state() if cam_ok else "track"
+        # ---- 有摄像头：画面 + 包住真实头部的能量环（保留玩家想看到的自己）----
+        if cam_ok:
+            img = pygame.Rect(0, 0, r.w - 24, r.h - 66 - 12)
+            cam = self._cam_preview(img.w, img.h)
+            self.avatar.draw_cam_card(self.screen, r, cam,
+                                      self._face_in_preview(img.size),
+                                      self._t, state, "PLAYER 1")
+            return
+        # ---- 无摄像头：卡通化身 + 识别位置条（键盘/鼠标模式）----
         hc = self.head_ctl
         neutral = hc.neutral[0] if hc.neutral else None
-        # 死区现在是"人脸尺度"（0.26 个脸宽），换算到画面坐标要乘以当前脸宽 ——
-        # 这样玩家看到的那条绿色区间会随"坐远坐近"自动变窄变宽，
+        # 死区是"人脸尺度"（0.26 个脸宽），换算到画面坐标要乘当前脸宽 ——
+        # 这样那条绿色区间会随"坐远坐近"自动变窄变宽，
         # 正是"手感与距离无关"最直观的证据。
         dz = C.DEADZONE_FACE * max(0.03, hc.nw)
-        cam = bool(self.tracker and self.tracker.ok)
-        state = self._track_state() if cam else "track"
-        hud = self.tracker.backend_name if cam else "键盘 / 鼠标"
         self.avatar.draw_card(self.screen, r, self._t, state,
-                              hud=hud, neutral=neutral,
+                              hud="键盘 / 鼠标", neutral=neutral,
                               deadzone=dz)
 
     def _draw_debug(self) -> None:
