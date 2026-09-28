@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from core import art as A
+from core import scene as SCN
 from core import sichuan as SC
 from core import config as C
 from core import theme as U
@@ -91,20 +92,22 @@ def _mk_platform_surfaces():
 
 
 class _Cloud:
+    """
+    云。
+
+    旧版是"一条平整的底 + 四个白圆 + 一条灰底"，看起来就是一串白气泡 ——
+    因为**上沿和下沿一样亮**，没有体积。现在改用 scene.cloud_sprite：
+    底部压暗、顶部受光、轮廓封闭，才像一团云而不是几个圆。
+    """
+
     def __init__(self, x, y, s):
         self.x, self.y, self.s = x, y, s
+        self.seed = int(x) % 97
 
     def draw(self, surf, cam):
-        x = self.x - cam
-        s = self.s
-        y = self.y
-        c = (252, 252, 255)
-        # 先铺一条平整的底，再用圆堆出蓬松的顶，最后压一层底部阴影
-        U.aa_ellipse(surf, (int(x - 122 * s), int(y - 4 * s), int(244 * s), int(46 * s)), c, 0, ss=2)
-        for dx, dy, r in ((-96, -16, 30), (-44, -38, 44), (24, -34, 40), (86, -14, 28)):
-            U.aa_circle(surf, (x + dx * s, y + dy * s), r * s, c, 0, ss=2)
-        U.aa_ellipse(surf, (int(x - 106 * s), int(y + 15 * s), int(212 * s), int(16 * s)),
-                     (214, 224, 244), 0, ss=2)
+        spr = SCN.cloud_sprite(int(270 * self.s), (252, 252, 255), 0.78, self.seed)
+        surf.blit(spr, (int(self.x - cam - spr.get_width() / 2),
+                        int(self.y - spr.get_height() * 0.60)))
 
 
 @register
@@ -114,6 +117,7 @@ class MarioGame(BaseGame):
     SUB = "横版平台跳跃"
     CATEGORY = "头部控制"
     ACCENT = (228, 76, 64)
+    WORLD = "meadow"
     ICON = "mushroom"
     HOW = "踩着敌人往右冲到旗杆，别掉进坑里"
     HINT = "头部左右跑动 · 抬头起跳 · 踩敌人 +100 · 到旗杆通关"
@@ -146,9 +150,15 @@ class MarioGame(BaseGame):
         self.bricks_broken = set()
         self.flag = 0.0
         self.win_t = 0.0
-        self._sky = U.vgrad3(C.DESIGN_W, C.DESIGN_H, SKY_TOP, (120, 184, 236), SKY_BOT)
-        self._clouds = [_Cloud(random.uniform(200, LEVEL_W), random.uniform(150, 380),
-                               random.uniform(0.7, 1.35)) for _ in range(26)]
+        self._sky = SCN.sky(C.DESIGN_W, C.DESIGN_H, SKY_TOP, (120, 184, 236), SKY_BOT)
+        # 云的数量与尺寸都要克制：26 朵 × 最大 1.35 倍会在天上连成一片"云墙"，
+        # 反而把天空糊死。14 朵、0.45~0.95 倍才是有留白的云。
+        self._clouds = [_Cloud(random.uniform(200, LEVEL_W), random.uniform(110, 430),
+                               random.uniform(0.45, 0.95)) for _ in range(14)]
+        # 少量**动态**背景云：整片背景都烘焙成静态图会变成"PPT"，
+        # 留几朵缓慢横向漂移，画面立刻活起来（4 次 blit，开销可忽略）
+        self._drift = [_Cloud(random.uniform(0, C.DESIGN_W * 2), random.uniform(140, 340),
+                              random.uniform(0.40, 0.72)) for _ in range(3)]
         self._hills = [(random.uniform(0, LEVEL_W), random.uniform(150, 260),
                         random.uniform(0.8, 1.5)) for _ in range(18)]
         self._bushes = [(random.uniform(0, LEVEL_W), random.uniform(0.8, 1.4)) for _ in range(22)]
@@ -160,19 +170,35 @@ class MarioGame(BaseGame):
         """把背景烘焙成一张长图，避免每帧重画云和山。"""
         W = LEVEL_W + 240
         self._bg = pygame.Surface((W, C.DESIGN_H))
+        # ---- 背景分层（远 → 近），层与层之间靠"大气透视"拉开纵深 ----
+        # 旧版只有"天空 + 三角山 + 白云"三层，而且远近一样实，所以是平的。
         self._bg.blit(self._sky, (0, 0))
-        # 川西群山（青城 / 峨眉 / 稻城 / 乐山）作为最远景
-        self._bg.blit(SC.skyline(W, 400, preset="mountain", base=(74, 128, 164),
-                                 haze=0.44, seed=3, count=6), (0, 150))
-        for hx, hr, hs in self._hills:
-            if hx > W:
-                continue
-            pts = [(hx - hr * 1.5, GROUND + 40), (hx, GROUND - hr * 0.9),
-                   (hx + hr * 1.5, GROUND + 40)]
-            U.aa_poly(self._bg, pts, U.shade(HILL, 0.86), 0, ss=2)
-            pts2 = [(hx - hr * 0.95, GROUND + 40), (hx + hr * 0.15, GROUND - hr * 0.62),
-                    (hx + hr * 1.1, GROUND + 40)]
-            U.aa_poly(self._bg, pts2, HILL, 0, ss=2)
+        # 1) 太阳：给整幅画面一个明确光源，之后所有受光都朝它对齐
+        SCN.sun(self._bg, W * 0.42, 210, 62)
+        # 2) 远景山脊：用圆润的正弦山形而不是地标剪影。
+        #    旧版直接铺 `skyline(preset="mountain")`，但青城山那三层峰峦每座
+        #    宽 500px、高 400px，三座一叠就并成了一块深色梯形，把画面从中间
+        #    切成两半 —— 地标剪影适合"中景可辨认"，不适合当远景。
+        # 山脊颜色必须明显深于该高度的天空，否则"大气透视"会变成"看不见"。
+        # 第一版取 (120,168,206) 再混 42% 天空色，结果与天空几乎同色，
+        # 远山完全隐形，只剩一条被雾洗白的横带。
+        # ⚠ 每层的 rect 底边都必须压到地面高度（GROUND+16）：
+        #   hill_range 只在 rect 内填充，rect 下方是透明的。
+        #   之前给的是"刚好包住山高"的矩形，于是山层底部被整齐截断、
+        #   下面漏出天空渐变 —— 在画面上就是一条贯穿全屏的横带。
+        _BOT = GROUND + 16
+        SCN.hill_range(self._bg, pygame.Rect(0, 296, W, _BOT - 296), 3,
+                       (92, 138, 184), seed=21, h_min=0.34, h_max=1.0, haze=0.30)
+        SCN.hill_range(self._bg, pygame.Rect(0, 352, W, _BOT - 352), 4,
+                       (68, 118, 164), seed=33, h_min=0.28, h_max=0.96, haze=0.16)
+        # 3) 雾带：只让第一排远山"退"一点，收窄到两排山之间，上下都归零。
+        SCN.fog_band(self._bg, pygame.Rect(0, 292, W, 190), (202, 226, 246), 62)
+        # 4) 中景丘陵：用正弦叠加的圆润山丘，而不是三角折线
+        # 同理：中景丘陵的 rect 底边也要压到地面，否则又是一条横带
+        SCN.hill_range(self._bg, pygame.Rect(0, GROUND - 300, W, _BOT - (GROUND - 300)), 5,
+                       U.shade(HILL, 0.80), seed=7, h_min=0.12, h_max=0.52, haze=0.30)
+        SCN.hill_range(self._bg, pygame.Rect(0, GROUND - 200, W, _BOT - (GROUND - 200)), 4,
+                       HILL, seed=13, h_min=0.10, h_max=0.46, haze=0.10)
         for bx, bs in self._bushes:
             if bx > W:
                 continue
@@ -417,6 +443,17 @@ class MarioGame(BaseGame):
     def draw(self, surf: pygame.Surface) -> None:
         cam = int(self.cam)
         surf.blit(self._bg, (-cam, 0))
+        # 动态背景云：按 0.45 视差缓慢漂移。
+        # 需求里明确要求"少量动态背景元素" —— 背景全烘焙会变成静态 PPT，
+        # 这几朵云只花 4 次 blit，却让整个天空"活着"。
+        for c in self._drift:
+            c.x += 9.0 / 60.0
+            if c.x - cam * 0.45 > C.DESIGN_W + 300:
+                c.x -= C.DESIGN_W + 640
+            spr = SCN.cloud_sprite(int(300 * c.s), (255, 255, 255), 0.76, c.seed)
+            dy = 34
+            surf.blit(spr, (int(c.x - cam * 0.45 - spr.get_width() / 2), int(c.y - dy)),
+                      special_flags=0)
 
         # ---- 平台（地面已在背景里烘焙好）----
         for i, (x, y, w, kind) in enumerate(PLATFORMS):
@@ -461,15 +498,23 @@ class MarioGame(BaseGame):
 
     def _draw_ground(self, surf, x, y, w):
         h = C.DESIGN_H - y
-        top = U.vgrad(w, 26, (104, 176, 96), (72, 146, 76))
+        top = U.vgrad(w, 26, (112, 190, 100), (70, 146, 74))
         surf.blit(top, (x, y))
-        body = A.shade_panel(w, h, (132, 92, 58), 0, 1.0, 0.74)
+        # 草皮顶缘：受光亮边（光源在左上）+ 一层环境光遮蔽暗带。
+        # 这两条线是"物体坐在地面上"的关键，缺了地面就是一块贴上去的色板。
+        pygame.draw.line(surf, (168, 226, 148), (x, y + 2), (x + w, y + 2), 4)
+        ao = pygame.Surface((w, 10), pygame.SRCALPHA)
+        for i in range(10):
+            ao.fill((0, 0, 0, int(70 * (1 - i / 9.0) ** 1.3)), (0, i, w, 1))
+        surf.blit(ao, (x, y + 24))
+        body = A.shade_panel(w, h, (140, 98, 62), 0, 1.0, 0.70)
         surf.blit(body, (x, y + 26))
-        # 泥土颗粒感
-        for gx in range(0, w, 46):
-            surf.fill((112, 78, 48), (int(x + gx + 6), y + 40, 16, 10))
-            surf.fill((148, 106, 68), (int(x + gx + 28), y + 62, 20, 12))
-        pygame.draw.line(surf, (60, 116, 64), (x, y), (x + w, y), 3)
+        # 泥土颗粒感（左右交替，避免形成规则网格）
+        for gi, gx in enumerate(range(0, w, 46)):
+            off = 12 if gi % 2 else 0
+            surf.fill((116, 80, 50), (int(x + gx + 6 + off), y + 40, 16, 10))
+            surf.fill((156, 112, 72), (int(x + gx + 28 - off), y + 62, 20, 12))
+        pygame.draw.line(surf, (74, 48, 30), (x, y + 26), (x + w, y + 26), 3)
 
     def _draw_block(self, surf, x, y, w, kind, used):
         for bx in range(0, w, 46):

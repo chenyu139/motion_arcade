@@ -199,6 +199,18 @@ def run_probe(args) -> int:
                       f"动作{'开' if inp.action else '关'}  "
                       f"found={'是' if inp.found else '否'}  "
                       f"| 举{inp_dbg(p)}")
+                # 头部各路信号：摇头/抬头"没反应"还是"太灵"，看这行最直接。
+                # · 平移 / 摇头 两路都该能单独把 axis 推上去（融合后取强者）
+                # · 俯仰是动作键的唯一来源；位移再大也不该触发动作键
+                d = head._debug
+                if d:
+                    print(f"          脸宽{d.get('face_w', 0):.3f} "
+                          f"姿态{'✓' if d.get('pose_ok') else '✗'} | "
+                          f"平移{d.get('a_move', 0):+.2f} "
+                          f"摇头{d.get('a_yaw', 0):+.2f}(yaw{d.get('yaw', 0):+.2f}) | "
+                          f"俯仰{d.get('b_pitch', 0):+.2f} "
+                          f"位移{d.get('b_move', 0):+.2f} "
+                          f"抬起{d.get('lift', 0):+.2f} 键值{d.get('jump_sig', 0):+.2f}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -212,6 +224,15 @@ def run_probe(args) -> int:
     verdict = "通过" if stat["viol"] == 0 and synth == 0 else \
         f"不通过（未识别期间非零输出 {stat['viol']} 帧）"
     print(f"        未识别期间仍有非零输出的帧数：{stat['viol']}　→ {verdict}")
+    # 基线可信度：摇头/抬头准不准，一半取决于校准时的中性位是否合理。
+    # 脸宽太小说明坐得太远（检测噪声会被放大），关键点不可信则姿态路径会退化。
+    fw = head.nw
+    print(f"        中性位基线：脸宽 {fw:.3f}"
+          f"（{'偏小，建议坐近一点' if fw < 0.09 else '正常'}）"
+          f"　yaw {head.nyaw:+.2f}　pitch {head.npitch:+.2f}")
+    if abs(head.nyaw) > 0.35 or abs(head.npitch) > 0.35:
+        print("        ⚠ 校准时的朝向偏离很大：说明校准时头是歪着/低着的。"
+              "按 C 重新校准，采集时正对摄像头、头摆正。")
     if stat["hold"] == 0 and stat["track"] > 0:
         print("        （本次没有出现短暂丢帧，属于理想情况；HOLD 的防抖逻辑见 tools/test_input.py）")
     return 0
@@ -228,5 +249,34 @@ def inp_dbg(p) -> str:
     return " ".join(parts)
 
 
+def _install_crash_log() -> None:
+    """
+    把未捕获异常写进日志。
+
+    `.app` 没有终端，一旦主循环里抛异常，进程会静默退出 —— 现象就是
+    "用着用着窗口没了"，而 run.log 里什么线索都没有。装了钩子之后，
+    至少能看到类型与堆栈（真机上踩过一次，排查花了不少时间）。
+    """
+    import traceback
+
+    def hook(t, v, tb):
+        try:
+            print("\n[FATAL] 未捕获异常 —— 请把下面这段发给开发者：", file=sys.stderr)
+            traceback.print_exception(t, v, tb)
+            sys.stderr.flush()
+        except Exception:                                            # noqa: BLE001
+            pass
+    sys.excepthook = hook
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _install_crash_log()
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:                                            # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise SystemExit(1)

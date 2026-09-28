@@ -25,6 +25,7 @@ core/tracker.py
 """
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -109,6 +110,16 @@ class FaceBackendYuNet:
         # YuNet 的 5 个关键点：右眼、左眼、鼻尖、右嘴角、左嘴角
         pts = [(float(f[i]), float(f[i + 1])) for i in (4, 6, 8, 10, 12)]
         eye_r, eye_l, nose = pts[0], pts[1], pts[2]
+        # 关键点可信度：5 个点都得落在框内，且双眼间距相对于框宽足够大。
+        # 侧脸时 YuNet 的关键点会明显退化（眼距压得很扁、点跑到框外），
+        # 这时算出来的 yaw/pitch 完全不可信 —— 宁可这一帧不用姿态量，
+        # 也不要让它污染控制量（这是"摇头/抬头误判"的来源之一）。
+        eye_span = math.hypot(eye_l[0] - eye_r[0], eye_l[1] - eye_r[1])
+        pose_ok = (
+            eye_span >= max(4.0, bw * 0.16)
+            and all(-bw * 0.15 <= p[0] - x <= bw * 1.15
+                    and -bh * 0.15 <= p[1] - y <= bh * 1.15 for p in pts)
+        )
         return FaceState(
             found=True,
             cx=min(1.0, max(0.0, (x + bw / 2) / w)),
@@ -117,30 +128,60 @@ class FaceBackendYuNet:
             yaw=self._yaw(nose, eye_r, eye_l),
             pitch=self._pitch(nose, eye_l, eye_r, pts[3], pts[4]),
             roll=float(np.arctan2(eye_l[1] - eye_r[1], max(1.0, eye_l[0] - eye_r[0]))),
+            pose_ok=pose_ok,
             box=(int(x), int(y), int(bw), int(bh)),
             landmarks=pts,
             nose=nose,
         )
 
     @staticmethod
-    def _yaw(nose, eye_r, eye_l) -> float:
-        """头部左右转向：比较鼻尖到左右眼的水平距离（正脸时基本对称）。"""
-        d_r = abs(nose[0] - eye_r[0])
-        d_l = abs(eye_l[0] - nose[0])
-        tot = d_r + d_l
-        if tot < 1e-3:
+    def _yaw(nose, eye_a, eye_b) -> float:
+        """
+        头部左右转向（**旋转不变**）。
+
+        做法：把"鼻尖 − 双眼中点"的位移**投影到眼线方向**上，再除以半个眼距。
+
+        为什么不能像旧版那样直接比 |鼻尖−左眼| 与 |鼻尖−右眼| 的差值：
+        头稍微一歪（roll），这两个距离就同时变化，于是会读出一个虚假的转向 ——
+        而"点头/歪头"在真实使用里几乎每帧都在发生，噪声因此长期存在。
+
+        符号约定：画面已镜像，所以"往右转 → 鼻尖在画面里右移 → 返回正值"，
+        与横向控制量的正方向一致。
+        """
+        ax, ay = float(eye_a[0]), float(eye_a[1])
+        bx, by = float(eye_b[0]), float(eye_b[1])
+        # 统一成"画面左眼 / 画面右眼"，不依赖模型对 landmark 的命名顺序
+        if ax <= bx:
+            (lx, ly), (rx, ry) = (ax, ay), (bx, by)
+        else:
+            (lx, ly), (rx, ry) = (bx, by), (ax, ay)
+        span = math.hypot(rx - lx, ry - ly)
+        if span < 1e-3:
             return 0.0
-        return float(np.clip((d_r - d_l) / tot * 1.6, -1.0, 1.0))
+        ux, uy = (rx - lx) / span, (ry - ly) / span           # 眼线单位向量
+        mx, my = (lx + rx) * 0.5, (ly + ry) * 0.5
+        along = (float(nose[0]) - mx) * ux + (float(nose[1]) - my) * uy
+        return float(np.clip(along / (span * 0.5), -1.0, 1.0))
 
     @staticmethod
-    def _pitch(nose, eye_l, eye_r, mouth_r, mouth_l) -> float:
-        """俯仰：鼻尖到"眼线"的距离占"眼线到嘴线"的比例。"""
-        eye_y = (eye_l[1] + eye_r[1]) / 2.0
-        mouth_y = (mouth_r[1] + mouth_l[1]) / 2.0
-        span = mouth_y - eye_y
-        if span < 2:
+    def _pitch(nose, eye_a, eye_b, mouth_a, mouth_b) -> float:
+        """
+        俯仰（**旋转不变**，且与画面距离无关）。
+
+        把鼻尖投影到"眼线中点 → 嘴线中点"这条轴上，取归一化位置。
+        抬头时下半张脸被透视压缩，鼻尖相对位置前移，读数随之变大。
+        头歪（roll）不会污染它，因为它用的是投影而不是纯垂直距离。
+        """
+        ex = (float(eye_a[0]) + float(eye_b[0])) * 0.5
+        ey = (float(eye_a[1]) + float(eye_b[1])) * 0.5
+        mx = (float(mouth_a[0]) + float(mouth_b[0])) * 0.5
+        my = (float(mouth_a[1]) + float(mouth_b[1])) * 0.5
+        dx, dy = mx - ex, my - ey
+        span = math.hypot(dx, dy)
+        if span < 3.0:
             return 0.0
-        k = (nose[1] - eye_y) / span
+        ux, uy = dx / span, dy / span
+        k = ((float(nose[0]) - ex) * ux + (float(nose[1]) - ey) * uy) / span
         return float(np.clip((0.52 - k) * 2.4, -1.0, 1.0))
 
 

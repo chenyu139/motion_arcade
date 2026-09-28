@@ -45,6 +45,7 @@ class MaskGame(BaseGame):
     SUB = "看准了就变"
     CATEGORY = "头部控制"
     ACCENT = (232, 96, 96)
+    WORLD = "stage"
     ICON = "mask"
     HOW = "按提示挑中同一张脸谱，越答越快"
     HINT = "头部左右选脸谱 · 抬头确认 · 答错扣命"

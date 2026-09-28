@@ -38,6 +38,7 @@ class PuzzleGame(BaseGame):
     SUB = "九宫归位"
     CATEGORY = "手部控制"
     ACCENT = (226, 116, 138)
+    WORLD = "teahouse"
     ICON = "puzzle"
     HOW = "握拳抓起绣片，拖到正确位置松开"
     HINT = "手掌移动 · 握拳抓起 · 张开放下"

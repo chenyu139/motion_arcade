@@ -47,6 +47,7 @@ class LanternGame(BaseGame):
     SUB = "记住点灯顺序"
     CATEGORY = "头部控制"
     ACCENT = (244, 168, 72)
+    WORLD = "night"
     ICON = "lantern"
     HOW = "记住灯笼亮起的顺序，然后依次点亮"
     HINT = "头部左右选灯 · 抬头点亮 · 顺序错就重来"

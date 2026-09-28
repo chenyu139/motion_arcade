@@ -38,6 +38,7 @@ class DuelGame(BaseGame):
     SUB = "头手并用"
     CATEGORY = "头部 + 手部"
     ACCENT = (168, 176, 236)
+    WORLD = "night"
     ICON = "taichi"
     HOW = "上面用头、下面用手，两条线都要躲开障碍"
     HINT = "头部控制上球 · 手掌控制下球 · 撞 3 次结束"

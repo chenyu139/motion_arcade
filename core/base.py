@@ -19,6 +19,7 @@ core/base.py
 from __future__ import annotations
 
 import math
+import sys
 import random
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -26,6 +27,7 @@ import pygame
 
 from . import config as C
 from . import theme as U
+from . import scene as SCN
 from .inputs import GameInput
 
 Color = Tuple[int, ...]
@@ -47,6 +49,11 @@ class BaseGame:
     ACHIEVEMENT = ""               # 通关条件说明
     REQUIRES = ("head",)           # 需要的输入通道
     MSG_Y = None                   # 中央提示的 y（默认 TOP+168，子类可避开关键区域）
+    # ---- 世界观感（第 1、8 项：三层空间 / 光照 / 景深 / 氛围）----
+    # WORLD 选 core/scene.py 里的世界预设，决定方向光、雾色、前景剪影与暗角。
+    # 背景本体的主题内容仍由各游戏的 _make_bg 画，这里只是给它叠上"深度"。
+    WORLD = "meadow"
+    WORLD_Y = None                 # 地平线 y；None = 自动从模块常量推断
 
     # ---- 共享常量 ----
     W = C.DESIGN_W
@@ -90,8 +97,42 @@ class BaseGame:
         raise NotImplementedError
 
     # ------------------------------------------------------------------ 共用推进
+    # ------------------------------------------------------------------ 世界合成
+    def _ground_line(self) -> int:
+        """
+        推断"地平线"位置，用于雾带与接触阴影。
+
+        优先用类属性 WORLD_Y；否则从游戏模块里找常见的地面常量
+        （GROUND / FLOOR / WATER_Y / HORIZON…）。这样 20 款游戏都不用单独声明，
+        而推断失败时退回画面下方 72% —— 对任何构图都还算合理的位置。
+        """
+        if self.WORLD_Y is not None:
+            return int(self.WORLD_Y)
+        mod = sys.modules.get(type(self).__module__)
+        for nm in ("GROUND", "GROUND_Y", "FLOOR", "WATER_Y", "HORIZON",
+                   "PITCH_TOP", "FLOOR_Y", "BASE_Y"):
+            v = getattr(mod, nm, None)
+            if isinstance(v, (int, float)) and 0 < v < self.H:
+                return int(v)
+        return int(self.H * 0.72)
+
+    def _wear_world(self) -> None:
+        """
+        给背景叠上深度合成（见 core/scene.py 的 depth_pass）。
+
+        放在 tick 里按需触发而不是构造时调用：`reset()` 会重建 `_bg`
+        （"再来一局"），构造时只做一次的话第二局就退回扁平背景了。
+        用对象同一性判断，换过就重新合成一次。
+        """
+        bg = getattr(self, "_bg", None)
+        if bg is None or bg is getattr(self, "_bg_worn", None):
+            return
+        SCN.depth_pass(bg, self.ACCENT, self.WORLD, self._ground_line())
+        self._bg_worn = bg
+
     def tick(self, dt: float, inp: GameInput) -> None:
         """外壳每帧调用：先跑公共计时/特效，再跑子类 update。"""
+        self._wear_world()
         self.t += dt
         if self._flash_a > 0:
             self._flash_a = max(0.0, self._flash_a - dt * 3.4)

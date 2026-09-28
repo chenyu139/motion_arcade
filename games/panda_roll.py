@@ -44,6 +44,7 @@ class PandaRollGame(BaseGame):
     SUB = "三星堆管道疾走"
     CATEGORY = "头部控制"
     ACCENT = (120, 226, 198)
+    WORLD = "night"
     ICON = "panda"
     HOW = "在管道里换道躲障碍，越跑越快"
     HINT = "头部左右换道 · 抬头跳过陶俑 · 竹笋 +10"

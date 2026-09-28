@@ -51,17 +51,27 @@ int main(int argc, char *argv[]) {
         project_dir(dir, sizeof(dir));
 
         /* 日志落盘：.app 没有终端，stdout/stderr 必须重定向，
-         * 否则排查摄像头问题时什么都看不到。
-         * 注意 stdout / stderr 要用各自独立的文件描述符打开，
-         * 否则两个 freopen("w") 会互相覆盖。 */
+         * 否则排查问题时什么都看不到。
+         *
+         * 关键：**两个流必须共享同一个文件描述符**，不能各开一次。
+         *   各自 open(O_TRUNC) 的话，第二次 open 会把第一次已经写进去的内容
+         *   截断，此后两个 FILE 各带一个偏移量往同一段字节上写、互相覆盖 ——
+         *   表现就是"日志里只有前半段，异常堆栈消失"。
+         *   （真机上踩过一次：主循环抛异常、进程静默退出，而日志里什么都没有，
+         *     排查了很久才发现是日志自己把错误吃掉了。）
+         *   dup2 到同一个 fd 后，两者共享偏移，顺序追加，不再互相破坏。
+         * 另外 stdout 要设成行缓冲，否则崩溃前最后几行还在缓冲区里。 */
         char log_path[PATH_MAX];
         snprintf(log_path, sizeof(log_path), "%s/run.log", dir);
-        FILE *f = freopen(log_path, "w", stdout);
-        (void)f;
-        int fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            dup2(fd, STDERR_FILENO);
-            close(fd);
+        int logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (logfd >= 0) {
+            dup2(logfd, STDOUT_FILENO);
+            dup2(logfd, STDERR_FILENO);
+            if (logfd > STDERR_FILENO) {
+                close(logfd);
+            }
+            setvbuf(stdout, NULL, _IOLBF, 0);
+            setvbuf(stderr, NULL, _IONBF, 0);
         }
 
         printf("[launcher] 项目目录：%s\n", dir);

@@ -40,6 +40,7 @@ class TennisGame(BaseGame):
     SUB = "2026 四川城市网球联赛"
     CATEGORY = "头部控制"
     ACCENT = (96, 196, 244)
+    WORLD = "court"
     ICON = "racket"
     HOW = "跑到位、抬头挥拍，先到 5 分"
     HINT = "头部左右跑位 · 抬头挥拍 · 看准拍面与球的距离"

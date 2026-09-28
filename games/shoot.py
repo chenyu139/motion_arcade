@@ -35,6 +35,7 @@ class ShootGame(BaseGame):
     SUB = "掌中准星"
     CATEGORY = "手部控制"
     ACCENT = (150, 208, 120)
+    WORLD = "meadow"
     ICON = "bow"
     HOW = "移动手掌瞄准，握拳放箭"
     HINT = "手掌移动准星 · 握拳放箭 · 瞄准要稳"

@@ -39,6 +39,11 @@ from . import theme as U
 from .inputs import (BodyController, FaceState, GameInput, HandController, HandState,
                      HeadController)
 from .menu import Menu
+from . import ui as UI
+from . import sfx
+from .avatar import PlayerAvatar
+from .feedback import Feedback
+from .scene import Atmosphere
 from .vision import COCO17_EDGES, HAND_EDGES
 
 ZERO = GameInput()
@@ -48,8 +53,17 @@ class Shell:
     def __init__(self, vision: str = "auto", cam_index: int = C.CAM_INDEX,
                  no_cam: bool = False, windowed: bool = False,
                  start_game: str = "menu") -> None:
+        # 混音器要在 pygame.init() **之前** pre_init，否则采样率/缓冲会被
+        # 默认值锁定，短促的卡通音效会有明显延迟（听感上就是"按了没响"）。
+        if C.SFX_ENABLE:
+            try:
+                pygame.mixer.pre_init(44100, -16, 2, 512)
+            except Exception:                                    # noqa: BLE001
+                pass
         pygame.init()
         pygame.display.set_caption(C.TITLE)
+        if C.SFX_ENABLE:
+            sfx.init()
         self.screen, self.display_mode = self._setup_display(windowed)
         self.canvas = pygame.Surface((C.DESIGN_W, C.DESIGN_H))
         self.clock = pygame.time.Clock()
@@ -90,7 +104,13 @@ class Shell:
         self.game: Optional[B.BaseGame] = None
         self.paused = False
         self.fullscreen = not windowed
-        self.show_prev = True
+        # 默认**不再常驻**摄像头调试画面：玩家看到的是卡通化身卡片。
+        # 原始画面 + 骨架 + FPS 归到按 H 打开的诊断层。
+        self.show_diag = False
+        self.avatar = PlayerAvatar(UI.PRIMARY, "PLAYER 1")
+        self.fx = Feedback()
+        self.atm = Atmosphere(C.DESIGN_W, C.DESIGN_H, UI.PRIMARY)
+        self._face = FaceState()
         # 体感模式：打开后纯头部游戏也会加载全身姿态，
         # 游戏里的 inp.xc / inp.action 会自动优先采用身体动作。
         # 默认关，因为全身姿态检测不便宜（真机 16~29ms/次）。
@@ -103,6 +123,19 @@ class Shell:
         self.toast = ""
         self._prev_frame = None
         self._hands: List[HandState] = []
+        # HUD 的"数值变化 → 弹一下"所需的状态
+        self._hud_prev: dict = {}
+        self._hud_pop: dict = {}
+        self._dt = 1.0 / 60.0
+        self._t = 0.0                     # 全局时间（驱动所有 UI 微动画）
+        self._enter = 0.0                 # 进入游戏的转场计时（镜头推进 + 淡入）
+        self._menu_sel = -1               # 大厅选中项（变化时出声）
+        # 结算页：本局是否已结算过 / 结算后的计时 / 本机本次运行的最好成绩
+        self._result_key: tuple = ()
+        self._result_t = 0.0
+        self._best: dict = {}
+        self._record = False
+        self._score_final = 0
         self._vision = None
         self._mouse_hand = (0.5, 0.5)
         print(f"[shell] 已就绪：{C.DESIGN_W}x{C.DESIGN_H}　显示模式 {self.display_mode}　"
@@ -155,9 +188,20 @@ class Shell:
     def run(self) -> None:
         while self.running:
             dt = min(0.05, self.clock.tick(C.FPS) / 1000.0)
+            self._dt = dt
+            self._t += dt
             self._events()
             inp = self._input(dt)
             self._update_lost(dt, inp)
+            self._update_avatar(dt, inp)
+            self.fx.update(dt)
+            self.atm.update(dt)
+            if self._enter > 0:
+                self._enter = max(0.0, self._enter - dt)
+            if self.scene == "menu" and self.menu.sel != self._menu_sel:
+                if self._menu_sel >= 0:
+                    sfx.play("move")
+                self._menu_sel = self.menu.sel
             if self.toast_t > 0:
                 self.toast_t = max(0.0, self.toast_t - dt)
             if self.fade > 0:
@@ -190,15 +234,44 @@ class Shell:
             off = self.game.shake_offset()
         if off != (0, 0):
             self.screen.fill((6, 8, 18))
-        self.screen.blit(self.canvas, off)
-
-        if self.scene == "game":
-            self._draw_hud()
-            self._draw_preview()
-            self._draw_hints()
-            self._draw_result()
+        # ---- 进入游戏的转场：镜头推进 + 淡入（prompt 第 6 项"转场"）----
+        # 一帧一次的 smoothscale，代价约 2~3ms，且只在 0.42 秒内发生。
+        # 它替代了"硬切"——硬切正是"网页小游戏"最典型的手感。
+        if self._enter > 0:
+            k = self._enter / max(1e-3, C.ENTER_ANIM)      # 1 → 0
+            e = U.ease_out_cubic(1.0 - k)
+            zoom = 1.0 + 0.055 * (1.0 - e)
+            self._enter_canvas = pygame.transform.smoothscale(
+                self.canvas, (int(C.DESIGN_W * zoom), int(C.DESIGN_H * zoom)))
+            off = ((self.screen.get_width() - self._enter_canvas.get_width()) // 2,
+                   (self.screen.get_height() - self._enter_canvas.get_height()) // 2)
+            self.screen.blit(self._enter_canvas, off)
+            if k > 0.02:
+                veil = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+                veil.fill((10, 8, 26, int(200 * k ** 1.4)))
+                self.screen.blit(veil, (0, 0))
         else:
-            self._draw_preview()
+            self.screen.blit(self.canvas, off)
+
+        # ---- 全屏氛围层：叠在世界之上、UI 之下 ----
+        # 这是"让 20 款游戏看起来像同一个游戏"最省力的一刀：统一的空气感、
+        # 柔光与暗角，不需要改任何游戏。游戏自己的 HUD/面板在它之上，所以不受影响。
+        if self.scene == "game":
+            self.atm.draw(self.screen)
+
+        over = bool(self.game is not None and self.game.state in ("win", "over"))
+        if self.show_diag:
+            self._draw_debug()
+        if self.scene == "game":
+            if not over:
+                self._draw_player_card()
+                self._draw_hud()
+                self._draw_hints()
+            self._draw_score_fx()
+            self._draw_result()
+            self._draw_pause()
+        else:
+            self._draw_menu_avatar()
         self._draw_alerts()
         self._draw_toast()
         if self.fade > 0:
@@ -250,8 +323,14 @@ class Shell:
                 self.toast_msg(U.T("重新校准中性位…", "Recalibrating…"))
             elif k == pygame.K_p:
                 self.paused = not self.paused
+            elif k == pygame.K_m:
+                m = sfx.toggle_mute()
+                self.toast_msg(U.T("已静音" if m else "音效已开启",
+                                   "Muted" if m else "Sound on"))
             elif k == pygame.K_h:
-                self.show_prev = not self.show_prev
+                self.show_diag = not self.show_diag
+                self.toast_msg(U.T(f"诊断层：{'开' if self.show_diag else '关'}",
+                                   f"Diagnostics: {'on' if self.show_diag else 'off'}"))
             elif k == pygame.K_b:
                 self.body_enabled = not self.body_enabled
                 if self.tracker and self.tracker.ok:
@@ -278,6 +357,17 @@ class Shell:
         self.lost_t = 0.0
         self.fade = 1.0
         self.menu.reset()
+        # 换游戏时清掉基线：否则首帧的"数值变化"会误触发一次反馈
+        self._hud_prev.clear()
+        self._hud_pop.clear()
+        self.fx.reset()
+        acc = UI.normalize_accent(getattr(cls, "ACCENT", UI.PRIMARY))
+        self.avatar.color = acc
+        self.fx.set_accent(acc)
+        self._result_key = ()
+        self._score_final = 0
+        self._enter = C.ENTER_ANIM
+        sfx.play("confirm")
         self._apply_vision_mode(cls)
         need = getattr(cls, "REQUIRES", ("head",))
         tip = " · ".join({"head": "头部", "hand": "手掌", "body": "身体"}.get(x, x)
@@ -315,6 +405,11 @@ class Shell:
         self.paused = False
         self.menu.reset()
         self.fade = 0.7
+        self._hud_prev.clear()
+        self.fx.reset()
+        self.avatar.color = UI.PRIMARY
+        self.fx.set_accent(UI.PRIMARY)
+        sfx.play("move")
         # 大厅要显示手部状态，只开手部就够
         if self.tracker and self.tracker.ok:
             self.tracker.set_vision_mode("hand")
@@ -335,6 +430,7 @@ class Shell:
         if cam_ok:
             frame, st, hands = self.tracker.get()
             vf = self.tracker.get_vision()
+            self._face = st
             self._prev_frame = frame
             self._hands = hands
             self._vision = vf
@@ -402,70 +498,167 @@ class Shell:
 
     # ------------------------------------------------------------------ HUD
     def _draw_hud(self) -> None:
+        """
+        游戏内 HUD。
+
+        设计取向是**浮层，不是状态栏**。旧版是一条贯穿全宽、带 1px 分割线的
+        深色条，四项 label / value 平铺 —— 那是后台管理系统的语言。现在换成浮在
+        画面上的独立卡片：图标 + 小标签 + 大数值，靠"小标签 / 大数值"的强层级
+        让 2~4 米外先读到数值。
+
+        同时**移除了给玩家看的 FPS 与快捷键**：那是调试信息，不是游戏信息。
+        FPS 只留在按 H 打开的诊断预览里，快捷键移到暂停面板。
+        """
         g = self.game
-        accent = getattr(g, "ACCENT", (110, 150, 240))
-        bar = U.vgrad(C.DESIGN_W, C.HUD_H, (16, 20, 40), (10, 13, 28)).copy()
-        self.screen.blit(bar, (0, 0))
-        pygame.draw.rect(self.screen, accent, (0, 0, 7, C.HUD_H))
-        pygame.draw.line(self.screen, (74, 92, 136), (0, C.HUD_H - 1),
-                         (C.DESIGN_W, C.HUD_H - 1), 1)
-        gl = U.glow_surface(120, accent, 52, 8)
-        self.screen.blit(gl, (-60, C.HUD_H // 2 - 120))
-
         cls = type(g)
-        U.text(self.screen, cls.TITLE, (36, 14), 38, (255, 255, 255), bold=True)
-        U.text(self.screen, cls.SUB, (38, 58), 20, (150, 172, 210))
 
-        x = 560
-        for item in g.hud_items():
-            label, value, col = item[0], item[1], item[2]
-            icon = item[3] if len(item) > 3 else None
-            U.text(self.screen, label, (x, 16), 20, (146, 168, 204))
-            if icon == "heart":
-                try:
-                    n = int(value)
-                except ValueError:
-                    n = 0
-                for i in range(max(3, n)):
-                    self._heart(x + 20 + i * 34, 66, col if i < n else (72, 82, 104), 12)
-            else:
-                U.text(self.screen, str(value), (x, 40), 32, col, bold=True)
-            x += 200
+        # ---- 左：标题 ----
+        U.text(self.screen, cls.TITLE, (42, 14), UI.T_M, UI.PAPER, bold=True,
+               outline=UI.INK, outline_w=4)
+        U.text(self.screen, cls.SUB, (46, 68), UI.T_XS, UI.PAPER_DIM, bold=True)
 
-        # 模式
+        # ---- 中：状态卡 ----
+        items = g.hud_items()
+        hx0, hx1 = 452, C.DESIGN_W - 452
+        if items:
+            gap = UI.GAP_S
+            cw = int(min(276, (hx1 - hx0 - gap * (len(items) - 1)) / len(items)))
+            ch = 88
+            y = (C.HUD_H - ch) // 2
+            for i, item in enumerate(items):
+                label = str(item[0])
+                value = str(item[1])
+                col = UI.normalize_accent(item[2])
+                icon = item[3] if len(item) > 3 else ""
+                # 数值一变就弹一下 —— "我的操作有反馈"里最便宜也最有效的一环
+                pop = self._hud_pop.setdefault(label, UI.Pop())
+                r = pygame.Rect(hx0 + i * (cw + gap), y, cw, ch)
+                if self._hud_prev.get(label) != value:
+                    if label in self._hud_prev:
+                        pop.hit()
+                        self._hud_event(label, value, self._hud_prev[label], r, col)
+                    self._hud_prev[label] = value
+                amt = pop.step(self._dt)
+                if icon == "heart":
+                    self._draw_hearts(r, value, amt)
+                else:
+                    UI.stat(self.screen, r, label, value, col, icon, amt)
+
+        # ---- 右：识别状态（右对齐；用居中摆放会因为文字变长而整体抖动）----
+        state = self._track_state()
         if not (self.tracker and self.tracker.ok):
-            mode, mcol = "键盘 / 鼠标模式", (250, 190, 90)
+            mode, mcol, micon = "键盘 / 鼠标", UI.WARN, "wave"
         elif self.paused:
-            mode, mcol = "已暂停", (250, 200, 90)
-        elif self._lost_paused():
-            mode, mcol = "已暂停（找不到头）", (250, 150, 120)
-        elif self._hands:
-            mode, mcol = "头部 + 手部", (130, 230, 180)
+            mode, mcol, micon = "已暂停", UI.WARN, "clock"
+        elif state == "track":
+            n = len(self._hands)
+            mode = "头部已锁定" + (f" · 手 {n}" if n else "")
+            mcol, micon = UI.ACCENT, "check"
+        elif state == "hold":
+            mode, mcol, micon = "短暂丢帧 · 输入冻结", UI.WARN, "clock"
         else:
-            mode, mcol = "头部控制", (110, 220, 170)
-        img = U.render_text(mode, 28, mcol, True)
-        self.screen.blit(img, (C.DESIGN_W - 40 - img.get_width(), 16))
-        fim = U.render_text(f"{self.clock.get_fps():4.0f} FPS", 20, (140, 165, 200))
-        self.screen.blit(fim, (C.DESIGN_W - 40 - fim.get_width(), 54))
+            mode, mcol, micon = "未识别到头 · 已暂停", UI.DANGER, "eye"
+        UI.pill(self.screen, (C.DESIGN_W - 42, 56), mode, mcol, micon,
+                size=UI.T_XS, align="right", height=60)
 
-    def _heart(self, cx, cy, col, s=12):
-        r = max(2, int(s * 0.62))
-        pygame.draw.circle(self.screen, col, (int(cx - s * 0.5), int(cy - s * 0.35)), r)
-        pygame.draw.circle(self.screen, col, (int(cx + s * 0.5), int(cy - s * 0.35)), r)
-        pygame.draw.polygon(self.screen, col, [
-            (cx - s * 1.05, cy - s * 0.12), (cx + s * 1.05, cy - s * 0.12), (cx, cy + s * 1.2)])
+    # 时间类数值是**倒计时**，每秒都在变；把它当"得分"会每秒弹一次 +1，
+    # 所以显式排除。这是"由数值变化推断反馈"唯一需要人工标注的地方。
+    _HUD_QUIET = ("时间", "剩余", "Time", "计时")
+    _HUD_LIFE = ("生命", "命", "Lives")
 
-    # ------------------------------------------------------------------ 预览
-    def _draw_preview(self) -> None:
-        if not self.show_prev:
+    def _hud_event(self, label: str, value: str, prev: str,
+                   r: pygame.Rect, col) -> None:
+        """
+        由 HUD 数值变化推断"玩家刚完成了一次操作"，并产出反馈。
+
+        这样做的好处是**20 款游戏零改动**就获得了统一的得分反馈，
+        而且各游戏的反馈手感完全一致 —— 这正是"像同一个团队做的"整体感来源。
+        """
+        if label in self._HUD_QUIET:
             return
-        pw, ph = C.PREVIEW_W, C.PREVIEW_H
-        # 菜单场景把预览放右下角：左下角要留给卡片，挡住一张卡很难看
-        if self.scene == "menu":
-            px = C.DESIGN_W - 28 - pw
-            py = C.DESIGN_H - C.HINT_H - 18 - ph
+        try:
+            dv = int(value) - int(prev)
+        except (TypeError, ValueError):
+            return
+        x, y = r.centerx, r.bottom + 14
+        if dv > 0:
+            self.fx.score(x, y, dv, col)
+            self.avatar.hit(min(1.2, 0.6 + dv / 60.0))
+        elif dv < 0 and label in self._HUD_LIFE:
+            self.fx.fail(x, y)
+
+    def _draw_hearts(self, r: pygame.Rect, value: str, pop: float) -> None:
+        """生命值：画心形图标而不是数字 —— 图标被识别的速度比数字快一个量级。"""
+        UI.card(self.screen, r, UI.R_MD)
+        pygame.draw.rect(self.screen, UI.DANGER, (r.x + 2, r.y + 12, 7, r.h - 24),
+                         border_radius=4)
+        UI.text(self.screen, "生命", (r.x + 22, r.y + 10), UI.T_XS, UI.PAPER_DIM)
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            n = 0
+        total = max(3, min(6, n))
+        rr = 20
+        step = rr * 2 + 12
+        x0 = r.x + 24 + rr
+        cy = r.y + 60
+        for i in range(total):
+            on = i < n
+            sz = rr * 2 * (1.0 + 0.22 * pop) if (on and pop > 0.01) else rr * 2
+            UI.draw_icon(self.screen, "heart", x0 + i * step, cy, sz,
+                         UI.DANGER if on else (86, 78, 128))
+
+    def _update_avatar(self, dt: float, inp: GameInput) -> None:
+        """
+        驱动玩家化身。
+
+        **只消费识别结果，不产生任何控制量** —— 所以接进来不会改变玩法。
+        无摄像头时用鼠标位置驱动，保证演示时画面里始终有"玩家"。
+        """
+        if self.tracker and self.tracker.ok:
+            st = self._face
+            self.avatar.update(dt, st.cx, st.cy, self._track_state() == "track")
         else:
-            px, py = C.PREVIEW_X, C.PREVIEW_Y
+            self.avatar.update(dt, inp.hx, inp.hy, True)
+
+    def _draw_score_fx(self) -> None:
+        """得分/连击的即时反馈（P5 实现，见 feedback 模块）。"""
+        self.fx.draw(self.screen)
+
+    def _draw_menu_avatar(self) -> None:
+        """
+        大厅里的**紧凑化身**（只有头和能量环，贴在标题右侧）。
+
+        大厅的选择网格占满整宽，左下角没有空间放整张玩家卡片 ——
+        但"玩家自己在画面里"这件事在大厅同样重要（否则第一屏又变成了工具界面）。
+        所以这里放一个紧凑版：状态一眼可见，又不遮挡任何一张卡。
+        """
+        cam = bool(self.tracker and self.tracker.ok)
+        state = self._track_state() if cam else "track"
+        self.avatar.draw_ring(self.screen, 648, 56, 76, state, self._t)
+        self.avatar.draw_head(self.screen, 648, 56, 52)
+        self.avatar.draw_particles(self.screen, 648, 56, 150)
+
+    def _draw_player_card(self) -> None:
+        """左下角玩家卡片（卡通化身 + 识别位置）。原始画面见 _draw_debug。"""
+        r = pygame.Rect(C.PREVIEW_X, C.PREVIEW_Y, C.PREVIEW_W, C.PREVIEW_H)
+        hc = self.head_ctl
+        neutral = hc.neutral[0] if hc.neutral else None
+        # 死区现在是"人脸尺度"（0.26 个脸宽），换算到画面坐标要乘以当前脸宽 ——
+        # 这样玩家看到的那条绿色区间会随"坐远坐近"自动变窄变宽，
+        # 正是"手感与距离无关"最直观的证据。
+        dz = C.DEADZONE_FACE * max(0.03, hc.nw)
+        cam = bool(self.tracker and self.tracker.ok)
+        state = self._track_state() if cam else "track"
+        hud = self.tracker.backend_name if cam else "键盘 / 鼠标"
+        self.avatar.draw_card(self.screen, r, self._t, state,
+                              hud=hud, neutral=neutral,
+                              deadzone=dz)
+
+    def _draw_debug(self) -> None:
+        """诊断层（按 H 打开）：原始摄像头 + 检测框 + 骨架 + FPS。"""
+        pw, ph = C.PREVIEW_W, C.PREVIEW_H
+        px, py = C.PREVIEW_X, C.PREVIEW_Y
         U.soft_shadow(self.screen, pygame.Rect(px, py, pw, ph), 16, 16, 130, (0, 8))
         panel = pygame.Surface((pw, ph))
         panel.fill((16, 20, 38))
@@ -520,17 +713,28 @@ class Shell:
                     if jn.ok:
                         pygame.draw.circle(panel, (255, 240, 170),
                                            (int(jn.x * pw), int(jn.y * ph)), 3)
-            # 中性位与死区
-            if self.head_ctl.neutral:
-                ncx, ncy = self.head_ctl.neutral
-                dz0 = int((ncx - C.DEADZONE_X) * pw)
-                dz1 = int((ncx + C.DEADZONE_X) * pw)
+            # 中性位与死区（死区是"人脸尺度"，换算到画面要乘当前脸宽）
+            hc = self.head_ctl
+            if hc.neutral:
+                ncx, ncy = hc.neutral
+                fw = max(0.03, hc.nw)
+                fh = max(0.03, hc.nh)
+                dz = C.DEADZONE_FACE * fw
+                dz0 = int((ncx - dz) * pw)
+                dz1 = int((ncx + dz) * pw)
                 band = pygame.Surface((max(1, dz1 - dz0), ph), pygame.SRCALPHA)
                 band.fill((90, 200, 130, 55))
                 panel.blit(band, (dz0, 0))
                 pygame.draw.line(panel, (90, 220, 140), (int(ncx * pw), 0),
                                  (int(ncx * pw), ph), 2)
-                jy = int((ncy - C.JUMP_DY) * ph)
+                # 满速线：让"要移多远才到满速"也能看见
+                for sgn in (-1, 1):
+                    fx = int((ncx + sgn * C.FULL_SCALE_FACE * fw) * pw)
+                    pygame.draw.line(panel, (150, 220, 250), (fx, 0), (fx, ph), 2)
+                # 动作键阈值线：换算成"纵向平移需要多少"来画（俯仰分量无法直接画）
+                dy_need = C.DEADZONE_FACE_Y + C.JUMP_ON * (
+                    C.FULL_SCALE_FACE_Y - C.DEADZONE_FACE_Y)
+                jy = int((ncy - dy_need * fh) * ph)
                 pygame.draw.line(panel, (250, 200, 90), (0, jy), (pw, jy), 2)
         elif cam_ok:
             U.text(panel, "等待画面…", (pw // 2, ph // 2), 24, (200, 200, 200), center=True)
@@ -541,6 +745,21 @@ class Shell:
         self.screen.blit(panel, (px, py))
         U.rr(self.screen, pygame.Rect(px - 3, py - 3, pw + 6, ph + 6), 14,
              None, (86, 108, 156), 3)
+
+        # 实时读数：摇头/抬头为什么"没反应"还是"太灵"，看这几个数最直接。
+        d = self.head_ctl._debug
+        if d:
+            lines = [
+                f"脸宽 {d.get('face_w', 0):.3f}  姿态{'✓' if d.get('pose_ok') else '✗'}",
+                f"平移 {d.get('a_move', 0):+.2f}   摇头 {d.get('a_yaw', 0):+.2f}"
+                f"  (yaw {d.get('yaw', 0):+.2f})",
+                f"俯仰 {d.get('b_pitch', 0):+.2f}   位移 {d.get('b_move', 0):+.2f}"
+                f"   抬起 {d.get('lift', 0):+.2f}",
+            ]
+            y0 = py + ph + 12
+            for i, ln in enumerate(lines):
+                U.text(self.screen, ln, (px + 4, y0 + i * 26), 19,
+                       (206, 216, 240), bold=True, shadow=3)
         # 状态条
         cap = pygame.Surface((pw, 38), pygame.SRCALPHA)
         cap.fill((8, 11, 24, 216))
@@ -565,57 +784,198 @@ class Shell:
 
     # ------------------------------------------------------------------ 提示条
     def _draw_hints(self) -> None:
-        y = C.DESIGN_H - C.HINT_H
-        bar = pygame.Surface((C.DESIGN_W, C.HINT_H), pygame.SRCALPHA)
-        bar.fill((8, 11, 24, 200))
-        self.screen.blit(bar, (0, y))
-        pygame.draw.line(self.screen, (60, 76, 116), (0, y), (C.DESIGN_W, y), 1)
+        """
+        底部只手势提示，**不再列键盘快捷键**。
+
+        旧的底部条把 ESC / R / C / P / H / TAB / F11 全列出来 —— 那是开发工具的
+        状态栏。玩家站在电视前既不会看、也不需要看，反而一眼就暴露"这是 Demo"。
+        快捷键全部移进暂停面板（玩家主动暂停时才有耐心看）。
+        """
         hint = getattr(self.game, "HINT", "") if self.game else ""
-        U.text(self.screen, hint, (36, y + 9), 22, (214, 228, 248))
-        right = "ESC 返回大厅　R 重开　C 校准　P 暂停　H 预览　TAB 换游戏　F11 全屏"
-        img = U.render_text(right, 20, (150, 172, 210))
-        self.screen.blit(img, (C.DESIGN_W - 36 - img.get_width(), y + 11))
+        if not hint:
+            return
+        y = C.DESIGN_H - C.HINT_H
+        UI.pill(self.screen, (C.DESIGN_W // 2, y + C.HINT_H // 2 + 2),
+                hint, UI.SURFACE, size=UI.T_S, alpha=196,
+                height=C.HINT_H - 10, pad=44)
+
+    def _draw_pause(self) -> None:
+        """暂停面板：快捷键说明的归宿。"""
+        if not self.paused:
+            return
+        ov = pygame.Surface((C.DESIGN_W, C.DESIGN_H), pygame.SRCALPHA)
+        ov.fill((14, 10, 34, 208))
+        self.screen.blit(ov, (0, 0))
+        cx, cy = C.DESIGN_W // 2, C.DESIGN_H // 2
+        panel = pygame.Rect(cx - 470, cy - 258, 940, 516)
+        UI.ink_card(self.screen, panel, UI.R_XL, 244)
+        UI.text(self.screen, "已 暂 停", (cx, cy - 196), UI.T_XL, UI.PAPER,
+                center=True, outline=UI.INK, outline_w=5)
+        U.text(self.screen, "抬头 · 或按 P 继续", (cx, cy - 112), UI.T_S,
+               UI.ACCENT, center=True, bold=True)
+        rows = [("P · 抬头", "继续游戏"), ("R", "重开本局"), ("C", "重新校准中性位"),
+                ("H", "显示 / 隐藏摄像头预览"), ("TAB", "换下一个游戏"),
+                ("ESC", "返回大厅"), ("F11", "全屏 / 窗口")]
+        y = cy - 42
+        for k, v in rows:
+            UI.pill(self.screen, (cx - 176, y), k, UI.PRIMARY, size=UI.T_XS,
+                    align="right", height=48, alpha=206)
+            U.text(self.screen, v, (cx - 142, y - 16), UI.T_S, UI.PAPER, bold=True)
+            y += 58
 
     # ------------------------------------------------------------------ 结算
+    def _game_score(self) -> int:
+        """取本局得分：优先找名字里带"分"的 HUD 项，否则取第一个能转成整数的。"""
+        items = self.game.hud_items() if self.game else []
+        for item in items:
+            if "分" in str(item[0]):
+                try:
+                    return int(item[1])
+                except (TypeError, ValueError):
+                    return 0
+        for item in items:
+            try:
+                return int(item[1])
+            except (TypeError, ValueError):
+                continue
+        return 0
+
     def _draw_result(self) -> None:
+        """
+        结算页。
+
+        旧版是"一行大字 + 两行提示"，没有任何仪式感，玩家感觉不到"这一局结束了"。
+        现在按商业游戏的做法给足反馈：弹入的大标题、滚动的得分、星级、
+        最高连击、新纪录徽章、庆祝粒子，以及两个大按钮。
+
+        星级与"新纪录"都只用**本局已有的数据**推出来（胜负 / 得分 / 最高连击），
+        所以不需要改动任何游戏的玩法逻辑。
+        """
         g = self.game
         if g is None or g.state not in ("win", "over"):
             return
-        ov = pygame.Surface((C.DESIGN_W, C.DESIGN_H), pygame.SRCALPHA)
-        ov.fill((6, 9, 20, 202))
-        self.screen.blit(ov, (0, 0))
         win = g.state == "win"
-        col = (120, 240, 170) if win else (255, 128, 110)
-        cx, cy = C.DESIGN_W // 2, C.DESIGN_H // 2
-        U.text(self.screen, g.result_title(), (cx, cy - 150), 96, col, center=True,
-               glow=24, glow_color=col, bold=True)
-        U.text(self.screen, g.result_sub(), (cx, cy - 44), 34, (255, 255, 255),
-               center=True, shadow=3)
-        r = pygame.Rect(cx - 420, cy + 30, 840, 84)
-        U.rr(self.screen, r, 18, (255, 255, 255, 18), (255, 255, 255, 60), 2)
-        U.text(self.screen, "R  重开本局", (cx - 180, cy + 58), 30, (222, 234, 252), center=True)
-        U.text(self.screen, "ESC  返回大厅", (cx + 180, cy + 58), 30, (222, 234, 252), center=True)
-        U.text(self.screen, "按 ESC 回到大厅可切换其他游戏（TAB 直接换下一个）",
-               (cx, cy + 158), 24, (150, 172, 210), center=True)
+
+        # ---- 首次进入结算：记分、判定新纪录、放庆祝 ----
+        key = (self.game_key, g.state)
+        if self._result_key != key:
+            self._result_key = key
+            self._result_t = 0.0
+            sc = self._game_score()
+            prev = self._best.get(self.game_key)
+            self._record = (prev is None or sc > prev) and sc > 0
+            if prev is None or sc > prev:
+                self._best[self.game_key] = sc
+            self._score_final = sc
+            sfx.play("celebrate" if win else "fail")
+            if win:
+                self.fx.celebrate()
+        self._result_t += max(1e-3, self._dt)
+        t = self._result_t
+
+        accent = UI.normalize_accent(getattr(g, "ACCENT", UI.PRIMARY))
+        col = UI.ACCENT if win else UI.DANGER
+
+        ov = pygame.Surface((C.DESIGN_W, C.DESIGN_H), pygame.SRCALPHA)
+        ov.fill((12, 9, 30, 216))
+        self.screen.blit(ov, (0, 0))
+        cx = C.DESIGN_W // 2
+        U.glow(self.screen, (cx, C.DESIGN_H // 2), 620, col, 44, 9)
+
+        panel = pygame.Rect(cx - 530, 100, 1060, 880)
+        enter = U.ease_out_back(U.clamp((t - 0.02) / 0.45, 0.0, 1.0))
+        if enter <= 0.01:
+            return
+        panel = panel.inflate(int(panel.w * (enter - 1) * 0.5),
+                              int(panel.h * (enter - 1) * 0.5))
+        UI.card(self.screen, panel, UI.R_XL, glow=col, glow_a=64,
+                top=U.mix(UI.SURFACE_HI, accent, 0.14),
+                bottom=U.mix(UI.SURFACE_LO, accent, 0.05))
+
+        # ---- 大标题 ----
+        pop = U.ease_out_back(U.clamp((t - 0.10) / 0.45, 0.0, 1.0))
+        title = g.result_title()
+        img = U.outline_text(title, int(UI.T_HERO * (0.72 + 0.28 * pop)), col,
+                             UI.INK, 7, True)
+        U.glow(self.screen, (cx, panel.y + 96), int(200 * pop), col, 90)
+        self.screen.blit(img, (cx - img.get_width() // 2, panel.y + 96 - img.get_height() // 2))
+        U.text(self.screen, g.result_sub(), (cx, panel.y + 186), UI.T_S,
+               (226, 220, 250), center=True)
+
+        # ---- 得分（数字滚动）----
+        k = U.clamp((t - 0.30) / 0.85, 0.0, 1.0)
+        shown = int(self._score_final * U.ease_out_cubic(k))
+        UI.text(self.screen, "本 局 得 分", (cx, panel.y + 246), UI.T_XS,
+                UI.PAPER_DIM, center=True)
+        num = U.outline_text(str(shown), UI.T_HERO, UI.SECONDARY, UI.INK, 7, True)
+        bounce = 1.0 + 0.10 * max(0.0, math.sin(min(1.0, k) * math.pi * 3.2)) * (1 - k)
+        if bounce > 1.001:
+            num = pygame.transform.rotozoom(num, 0, bounce)
+        U.glow(self.screen, (cx, panel.y + 350), 190, UI.SECONDARY, 70)
+        self.screen.blit(num, (cx - num.get_width() // 2, panel.y + 350 - num.get_height() // 2))
+
+        # ---- 星级 ----
+        stars = 1
+        if win:
+            stars += 2
+        if self.fx.max_combo >= 3:
+            stars += 1
+        if self._score_final > 0:
+            stars += 1
+        stars = max(1, min(3, stars))
+        if t > 0.55:
+            UI.stars(self.screen, (cx, panel.y + 452), stars, 3, 42,
+                      max(0.0, t - 0.55))
+
+        # ---- 最高连击 / 新纪录 ----
+        # 新纪录徽章单独占一行（放在星级与统计卡之间）。
+        # 之前把它压在统计卡上，两块内容互相打架 —— 徽章是"这一局的高光"，
+        # 必须有自己的位置。
+        if self._record and t > 0.85:
+            UI.pill(self.screen, (cx, panel.y + 512), "★  新 纪 录  ★",
+                    UI.SECONDARY, size=UI.T_S, height=52, glow=True)
+        stats = [(f"×{max(self.fx.max_combo, 1)}", "最高连击", UI.ACCENT),
+                 (str(self._best.get(self.game_key, self._score_final)), "本次最好", UI.PRIMARY)]
+        bw, gap = 280, 28
+        x0 = cx - (len(stats) * bw + (len(stats) - 1) * gap) // 2
+        for i, (v, label, c) in enumerate(stats):
+            r = pygame.Rect(x0 + i * (bw + gap), panel.y + 560, bw, 112)
+            UI.stat(self.screen, r, label, v, c,
+                    "combo" if i == 0 else "trophy")
+
+        # ---- 按钮 ----
+        UI.big_button(self.screen, pygame.Rect(cx - 470, panel.bottom - 148, 440, 116),
+                      "再 来 一 局", accent, t=self._t, hot=True, size=UI.T_M,
+                      sub="按 R")
+        UI.pill(self.screen, (cx + 250, panel.bottom - 90), "返回大厅　按 ESC",
+                UI.PRIMARY, icon="check", size=UI.T_S, height=72, pad=40)
 
     # ------------------------------------------------------------------ 提醒
     def _draw_alerts(self) -> None:
+        # 结算页会盖住整个世界，上面再压一行"键盘/鼠标模式"只会显噪
+        if self.game is not None and self.game.state in ("win", "over"):
+            return
         cam_ok = bool(self.tracker and self.tracker.ok)
         if not cam_ok:
-            # 菜单自己已经有状态指示，这里只在游戏里提示，避免压住大厅标题
+            # 菜单自己已经有状态指示，这里只在游戏里提示，避免压住大厅标题。
+            # 做成靠左的胶囊贴在 HUD 下方 —— 之前是一行横在画面正中的白字，
+            # 既压住了 HUD 卡片，也是典型的"调试信息直接给玩家看"。
             if self.scene == "game":
-                U.text(self.screen, "摄像头不可用 —— 已用鼠标模拟手部（按住左键=握拳），键盘亦可操作",
-                       (C.DESIGN_W // 2, C.HUD_H + 22), 26, (255, 210, 140), center=True, shadow=3)
+                UI.pill(self.screen, (42, C.HUD_H + 30),
+                        "键盘 / 鼠标模式　方向键移动 · 空格动作 · 按住左键 = 握拳",
+                        UI.WARN, icon="wave", size=UI.T_XS, align="left",
+                        height=52, alpha=196)
             return
         if self._lost_paused() is False and self.head_ctl.calibrating \
                 and self.lost_t < C.LOST_WARN_AFTER:
-            U.text(self.screen, "正在校准中性位，请自然正对摄像头…", (C.DESIGN_W // 2, C.HUD_H + 22),
-                   28, (255, 255, 255), center=True, shadow=3)
-            w, h = 460, 14
-            x, y = C.DESIGN_W // 2 - w // 2, C.HUD_H + 58
-            U.rr(self.screen, pygame.Rect(x, y, w, h), 7, (60, 70, 94))
-            U.rr(self.screen, pygame.Rect(x, y, max(8, int(w * self.head_ctl.progress)), h),
-                 7, (110, 220, 150))
+            UI.pill(self.screen, (C.DESIGN_W // 2, C.HUD_H + 34),
+                    "正在校准中性位，请自然正对摄像头…", UI.PRIMARY,
+                    icon="target", size=UI.T_XS, height=54)
+            w, h = 520, 16
+            x, y = C.DESIGN_W // 2 - w // 2, C.HUD_H + 70
+            U.rr(self.screen, pygame.Rect(x, y, w, h), h // 2, (58, 50, 104))
+            U.rr(self.screen, pygame.Rect(x, y, max(h, int(w * self.head_ctl.progress)), h),
+                 h // 2, UI.ACCENT)
             return
         if self.lost_t >= C.LOST_WARN_AFTER:
             ov = pygame.Surface((C.DESIGN_W, C.DESIGN_H), pygame.SRCALPHA)

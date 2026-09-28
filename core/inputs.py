@@ -34,6 +34,7 @@ class FaceState:
     yaw: float = 0.0           # 头部左右转 -1(左) ~ +1(右)，由鼻尖相对脸框偏移估计
     pitch: float = 0.0         # 头部俯仰 -1(低头) ~ +1(抬头)
     roll: float = 0.0          # 头部倾斜（弧度）
+    pose_ok: bool = False      # yaw/pitch 这一帧是否可信（关键点齐全且眼距够）
     mouth_open: float = 0.0    # 0~1，仅 MediaPipe 后端
     box: Optional[Tuple[int, int, int, int]] = None
     landmarks: Optional[List[Tuple[float, float]]] = None
@@ -213,13 +214,31 @@ def _deadzone(v: float, dz: float, full: float) -> float:
 
 class HeadController:
     """
-    把头部位置映射为游戏控制：
-      · 头部左右平移 → axis（相对校准中性位，带死区与平滑）
-      · 头部抬高     → jump / up
-      · 张嘴         → jump（仅 MediaPipe 后端可用）
-      · 头部转向     → yaw（由鼻尖偏移估计，做细腻控制时可用）
+    把头部动作映射为游戏控制。
 
-    启动时先采集若干帧建立"中性位"，以适配不同坐姿与摄像头位置。
+    映射规则（本轮重做）
+    --------------------
+        · 横向平移（脸框中心位移，**以脸宽为单位**） ┐
+        · 左右摇头（关键点估出的 yaw）              ┴→ 软最大融合 → axis
+        · 抬头（关键点估出的 pitch 为主 + 纵向位移为辅） → up / head_y / jump
+
+    为什么是这三个改动（对应"摇头和抬头经常识别错误"）：
+
+    1. **单位从"画面比例"改成"人脸尺度"。**
+       旧实现用 `cx - 中性x` 再除以画面宽 —— 于是灵敏度随坐姿远近翻倍变化
+       （坐近太灵、坐远推不动）。除以脸宽/脸高之后就与距离无关了。
+
+    2. **摇头并入横向控制。**
+       转头时脸框中心几乎不动（侧脸还会让框收缩、中心反向偏），所以旧实现里
+       "摇头"几乎不产生控制量。yaw 来自鼻尖相对眼线的偏移，是尺度无关的，
+       正好补上这一路。两路归一化后做软最大融合：谁信号强就听谁的。
+
+    3. **抬头改用俯仰为主。**
+       旧实现只看脸框中心的 cy 位移，而 cy 同时受"前后移动 / 坐姿下滑 / 耸肩"
+       影响。俯仰由鼻尖在"眼线→嘴线"上的相对位置算出，对这些干扰免疫得多。
+
+    另外还加了：姿态置信门（侧脸时关键点退化，就这一帧不用姿态量）、
+    动作键迟滞（防阈值抖动连发）、中性位自适应（防坐姿缓慢漂移被当成一直抬头）。
     """
 
     def __init__(self, cfg) -> None:
@@ -227,18 +246,31 @@ class HeadController:
         self.reset()
 
     def reset(self) -> None:
-        self._samples: List[Tuple[float, float]] = []
-        self.neutral: Optional[Tuple[float, float]] = None
+        # 校准采样：(cx, cy, w, h, yaw, pitch, pose_ok)
+        self._samples: List[Tuple[float, ...]] = []
+        self.neutral: Optional[Tuple[float, float]] = None   # 兼容：仅 (cx, cy)
+        self.nw = 0.18           # 中性地脸宽（归一化）
+        self.nh = 0.22           # 中性时脸高（归一化）
+        self.nyaw = 0.0          # 中性时的 yaw 读数（正脸对着镜头不等于读数为 0）
+        self.npitch = 0.0        # 中性时的 pitch 读数
         self.axis = 0.0
         self.jump = False
         self.up = 0.0
         self.head_y = 0.0
         self.yaw = 0.0
+        self.pitch = 0.0
         self.found = False
         self.tracking = False          # 迟滞后的"可用"状态（见 update）
         self.lost_t = 99.0             # 连续丢检时长
         self.calibrating = True
         self.progress = 0.0
+        self._jump_t = 0.0             # 动作键已按住时长
+        self._gap_t = 99.0             # 距上次松开时长
+        self._prev_w = 0.0
+        self._odd_t = 0.0              # "位移与尺度不自洽"已持续的时长
+        self._settled_t = 0.0          # 校准完成后经过的时长（前几秒基线收敛更快）
+        self._calib_pose_frames = 0    # 校准里姿态可信的帧数（用于提示用户）
+        self._debug: dict = {}         # 给诊断用：各路原始信号
 
     def _zero(self) -> None:
         """进入 LOST：**立即**归零，不做缓慢衰减。"""
@@ -246,8 +278,10 @@ class HeadController:
         self.up = 0.0
         self.head_y = 0.0
         self.yaw = 0.0
+        self.pitch = 0.0
         self.jump = False
 
+    # ------------------------------------------------------------------ 主循环
     def update(self, st: FaceState, dt: float) -> None:
         """
         三段状态机（TRACKING / HOLD / LOST）。
@@ -266,6 +300,7 @@ class HeadController:
                 return                     # HOLD：保持上一帧的有效输出，一点不变
             self._zero()                   # LOST：立即停住
             self.tracking = False
+            self._prev_w = 0.0
             return
 
         was_lost = self.lost_t > C.HOLD_AFTER
@@ -273,19 +308,62 @@ class HeadController:
         self.tracking = True
 
         if self.calibrating:
-            self._samples.append((st.cx, st.cy))
+            self._samples.append((st.cx, st.cy, st.w, st.h, st.yaw, st.pitch,
+                                  1.0 if st.pose_ok else 0.0))
             self.progress = min(1.0, len(self._samples) / C.CALIB_FRAMES)
-            self.axis = self.up = self.head_y = self.yaw = 0.0
+            self.axis = self.up = self.head_y = self.yaw = self.pitch = 0.0
             self.jump = False
             if len(self._samples) >= C.CALIB_FRAMES:
-                xs = sorted(s[0] for s in self._samples)
-                ys = sorted(s[1] for s in self._samples)
-                self.neutral = (xs[len(xs) // 2], ys[len(ys) // 2])
+                self._settle_neutral()
                 self.calibrating = False
+            self._prev_w = st.w
             return
 
+        # ---- 尺度突变保护：单帧跳变 ----
+        # 检测跳变（换了一张脸、框突然收缩到一半）在**尺度归一化之后会被放大**：
+        # 分母小了，同样的位移算出来是好几倍。一帧就足以把角色甩到边上。
+        if self._prev_w > 1e-4 and st.w > 1e-4:
+            ratio = st.w / self._prev_w
+            if ratio < 0.55 or ratio > 1.80:
+                self._prev_w = st.w
+                return
+        self._prev_w = st.w
+
         ncx, ncy = self.neutral  # type: ignore[misc]
-        raw = _deadzone(st.cx - ncx, C.DEADZONE_X, C.FULL_SCALE_X)
+
+        # ---- 位移与尺度不自洽保护 ----
+        # 只挡单帧跳变是不够的：如果假阳性连续出现（墙上的图案是静止的，
+        # 它会**每帧都出现**），第二帧起尺度就"稳定"了，保护失效，
+        # 于是 cx 落在画面边缘的假脸照样能把轴量打满。
+        #
+        # 判据是自洽性：真人移动时位置与大小是**耦合**的 —— 横向挪不到一个
+        # 身位，脸的大小不会同时变一半。所以"离中性位很远"且"大小也和校准
+        # 时差很多"同时成立，基本可以断定这不是同一个人的头。
+        if (abs(st.cx - ncx) > C.FACE_JUMP_REL
+                and abs(st.w / max(1e-4, self.nw) - 1.0) > C.FACE_SCALE_TOL):
+            self._odd_t += dt
+            if self._odd_t < C.FACE_ODD_HOLD:
+                return                      # 冻结输出（安全的失败方向）
+            # 持续超过阈值 → 那不是假阳性，是用户真的挪了位置/换了人。
+            # 这时正确做法是重建基线，而不是继续按旧基线输出一个荒唐的值。
+            self._rebuild_baseline(st)
+            return
+        self._odd_t = 0.0
+
+        # ---- 全部换成"人脸尺度"为单位（与坐姿距离无关）----
+        fw = max(0.03, self.nw)
+        fh = max(0.03, self.nh)
+        dx_face = (st.cx - ncx) / fw
+        dy_face = (ncy - st.cy) / fh             # 正值 = 抬高
+
+        # ---- 横向：平移 + 摇头，软最大融合 ----
+        a_move = _deadzone(dx_face, C.DEADZONE_FACE, C.FULL_SCALE_FACE)
+        yaw_sig = (st.yaw - self.nyaw) * C.YAW_SIGN if st.pose_ok else 0.0
+        a_yaw = (_deadzone(yaw_sig, C.YAW_DEADZONE, C.YAW_FULL_SCALE)
+                 if st.pose_ok else 0.0)
+        wm = abs(a_move) * C.MOVE_WEIGHT
+        wy = abs(a_yaw) * C.YAW_WEIGHT
+        raw = (a_move * wm + a_yaw * wy) / (wm + wy) if (wm + wy) > 1e-6 else 0.0
 
         if was_lost:
             # 刚重新捕获：限制单帧跳变。假阳性（墙上的图案、路过的反光）
@@ -296,13 +374,189 @@ class HeadController:
         # 基于时间的平滑：帧率变化时跟随手感保持一致（见 config 里的说明）
         k = 1.0 - math.exp(-dt / max(1e-3, C.HEAD_TAU))
         self.axis += k * (raw - self.axis)
+        ky = 1.0 - math.exp(-dt / 0.10)
+        self.yaw += ky * (max(-1.0, min(1.0, yaw_sig)) - self.yaw)
 
-        up_raw = ncy - st.cy                      # 正值 = 抬头
-        self.up = max(0.0, min(1.0, up_raw / 0.28))
-        self.head_y = max(-1.0, min(1.0, up_raw / 0.22))
-        self.yaw += (1.0 - math.exp(-dt / 0.10)) * (max(-1.0, min(1.0, st.yaw)) - self.yaw)
-        # 张嘴或抬头都算"动作键"
-        self.jump = (up_raw > C.JUMP_DY) or (st.mouth_open > C.MOUTH_OPEN_THRESHOLD)
+        # ---- 纵向：俯仰为主，位移为辅 ----
+        # 置信度衰减：低头/侧脸时 2D 关键点的俯仰读数会明显失真（真机实测
+        # 转头会把俯仰顶到 +0.32，逼近动作键阈值）。转向越大，俯仰越不可信。
+        # 衰减而不是"减掉一个耦合量"：不依赖耦合的符号，失效方向也安全
+        # （"转着头时抬头没反应" ≫ "一转头发动机就跳"）。
+        p_raw = (st.pitch - self.npitch) if st.pose_ok else 0.0
+        if st.pose_ok:
+            # 用**原始** st.yaw 而不是减掉基线后的量：这个衰减描述的是
+            # "检测器在画面上看到的偏转角有多大"，与基线准不准无关。
+            # 基线一旦采歪，用差值去算会把衰减算得过轻，保护失效。
+            conf = 1.0 - min(C.PITCH_YAW_SHRINK_MAX,
+                             abs(st.yaw) * C.PITCH_YAW_SHRINK)
+            p_sig = p_raw * max(0.0, conf)
+        else:
+            p_sig = 0.0
+        b_pitch = (_deadzone(p_sig, C.PITCH_DEADZONE, C.PITCH_FULL_SCALE)
+                   if st.pose_ok else 0.0)
+        b_move = _deadzone(dy_face, C.DEADZONE_FACE_Y, C.FULL_SCALE_FACE_Y)
+        if st.pose_ok:
+            # 连续量（瞄准用）留一点位移权重：姿态置信在真假之间切来切去时，
+            # 单一来源会让"抬起"这个数突然跳一下。小权重兼作过渡。
+            lift = C.PITCH_WEIGHT * b_pitch + C.LIFT_MOVE_WEIGHT * b_move
+            jump_sig = b_pitch
+        else:
+            # 没有可信姿态（Haar 后端 / 侧脸 / 关键点退化）：退回纯位移。
+            lift = b_move
+            jump_sig = b_move
+        self.pitch += (1.0 - math.exp(-dt / 0.09)) * (p_sig - self.pitch)
+        self.up = max(0.0, min(1.0, lift))
+        self.head_y = max(-1.0, min(1.0, lift))
+
+        # 动作键**只认单一来源**，绝不用融合信号：
+        # 融合信号里带着"纵向位移"，而往后靠、耸一下肩、坐姿下滑都会产生位移 ——
+        # 那就是"没抬头也触发了动作"的来源。抬头是俯仰变化，位移不是。
+        self._settled_t += dt          # 校准后开始计时（基线收敛速度用）
+        self._update_jump(jump_sig, st, dt)
+        self._adapt(dt, st, a_move, a_yaw, yaw_sig, p_raw,
+                    dx_face, dy_face)
+
+        self._debug = {
+            "dx_face": round(dx_face, 3), "dy_face": round(dy_face, 3),
+            "a_move": round(a_move, 3), "a_yaw": round(a_yaw, 3),
+            "yaw": round(st.yaw, 3), "yaw_sig": round(yaw_sig, 3),
+            "pitch_raw": round(p_raw, 3),
+            "pitch": round(p_sig, 3),
+            "b_pitch": round(b_pitch, 3), "b_move": round(b_move, 3),
+            "lift": round(lift, 3), "jump_sig": round(jump_sig, 3),
+            "pose_ok": st.pose_ok, "face_w": round(st.w, 3),
+        }
+
+    # ------------------------------------------------------------------ 基线重建
+    def _rebuild_baseline(self, st: FaceState) -> None:
+        """
+        把当前这一帧当作新的中性位，并把输出清零。
+
+        用于"位移与尺度持续不自洽"的情况 —— 那通常意味着用户大幅挪了位置、
+        换了坐姿，或者镜头前换人了。继续按旧基线输出只会给出一个荒唐的控制量；
+        重建基线 + 清零是唯一诚实的选择。用户会看到角色停一下然后恢复正常，
+        比被甩到屏幕边上要好得多。
+        """
+        self.neutral = (st.cx, st.cy)
+        self.nw = max(0.04, st.w)
+        self.nh = max(0.05, st.h)
+        self.nyaw = st.yaw if st.pose_ok else 0.0
+        self.npitch = st.pitch if st.pose_ok else 0.0
+        self._zero()
+        self._odd_t = 0.0
+
+    # ------------------------------------------------------------------ 动作键
+    def _update_jump(self, lift: float, st: FaceState, dt: float) -> None:
+        """
+        动作键（抬头）的迟滞触发。
+
+        裸阈值 + 噪声 = 阈值附近疯狂抖动，一次抬头会连发好几下 ——
+        用户看到的就是"抬头识别错误"。所以进入用高阈值、退出用低阈值，
+        并给"按下 / 松开"各自一个最短时长。
+        """
+        C = self.cfg
+        mouth = st.mouth_open > C.MOUTH_OPEN_THRESHOLD
+        self._gap_t += dt
+        if not self.jump:
+            if mouth or (lift > C.JUMP_ON and self._gap_t >= C.JUMP_MIN_GAP):
+                self.jump = True
+                self._jump_t = 0.0
+        else:
+            self._jump_t += dt
+            if self._jump_t >= C.JUMP_MIN_HOLD and not mouth and lift < C.JUMP_OFF:
+                self.jump = False
+                self._gap_t = 0.0
+
+    # ------------------------------------------------------------------ 中性位
+    def _settle_neutral(self) -> None:
+        """
+        从校准采样里取中位数作为中性位，**并剔除离群帧**。
+
+        只取中位数是不够的：真机上出现过"校准时用户在看终端"，24 帧采到的
+        yaw 是 +0.53；之后用户转回屏幕（真实 yaw ≈ 0）时，这个 0.53 的基线
+        偏差一直在扣 —— 明明正对摄像头，轴量却停在 -0.26，看起来就是"乱动"。
+        长窗口 + 按中位数绝对偏差（MAD）剔除离群帧后，这种"校准期间瞥了一眼
+        别处"能被滤掉。
+
+        yaw / pitch 只取 `pose_ok` 的样本 —— 校准期间难免有几帧侧脸或模糊，
+        把它们的退化读数当基线，之后所有转向都会带一个恒定偏差。
+        """
+        # 丢掉开头几帧：人刚坐下、位置还在动
+        pool = self._samples[self.cfg.CALIB_TRIM:] or self._samples
+
+        def median(vals: List[float]) -> float:
+            v = sorted(vals)
+            return v[len(v) // 2]
+
+        def inliers(idx: int, rows) -> List[float]:
+            vals = [r[idx] for r in rows]
+            if len(vals) < 5:
+                return vals
+            m = median(vals)
+            dev = sorted(abs(v - m) for v in vals)
+            mad = dev[len(dev) // 2]
+            tol = max(1e-6, self.cfg.CALIB_MAD_K * mad * 1.4826)
+            keep = [v for v in vals if abs(v - m) <= tol]
+            return keep or vals
+
+        good = [r for r in pool if r[6] > 0.5]
+        pose_pool = good or pool
+
+        self.neutral = (median(inliers(0, pool)), median(inliers(1, pool)))
+        self.nw = max(0.04, median(inliers(2, pool)))
+        self.nh = max(0.05, median(inliers(3, pool)))
+        self.nyaw = median(inliers(4, pose_pool))
+        self.npitch = median(inliers(5, pose_pool))
+        # 校准用了多少帧是可信的 —— 太少说明采集期间姿态一直不可信
+        self._calib_pose_frames = len(good)
+
+    def _adapt(self, dt: float, st: FaceState, a_move: float, a_yaw: float,
+               yaw_sig: float, p_raw: float, dx_face: float, dy_face: float) -> None:
+        """
+        中性位自适应漂移（**逐通道独立**）。
+
+        启动时只标定一次是不够的：人往后靠、身体下滑 20 秒，脸框中心就会
+        持续偏移，被当成"一直抬着头" —— 动作键常亮、角色一直在动。
+
+        两个关键设计：
+
+        1. **门限逐通道独立。** 之前用一个总门限，俯仰偏离 0.75 时连横向基线的
+           收敛都被卡死了 —— 明明在转头，基线却动不了，角色一直停在偏位。
+        2. **校准后头几秒用更快的时间常数。** 校准那 1.3 秒里用户可能在瞥别处，
+           基线会带上偏差；让它在用户坐定的头几秒里尽快落到真实休息位。
+
+        门限的语义是"这个量还没有明显表现出操作意图" —— 落在门内的当作休息位
+        吸收掉，超出说明玩家是在**故意**保持某个方向，那就绝不能学
+        （否则会变成"怎么动都不响应"）。
+        """
+        C = self.cfg
+        # 冷却用的是 `_gap_t`（距上次**松开**动作键的时长，初值 99 秒），
+        # 不是 `_jump_t`（已按住时长，从没按过时恒为 0）。
+        # 用错计时器的后果很隐蔽：条件恒成立 → 每帧提前返回 →
+        # **整个自适应功能变成空操作**，校准歪掉的基线永远回不到中位。
+        if self.jump or self._gap_t < C.NEUTRAL_ADAPT_COOLDOWN:
+            return
+        tau = (C.NEUTRAL_ADAPT_TAU_FAST if self._settled_t < C.NEUTRAL_FAST_WINDOW
+               else C.NEUTRAL_ADAPT_TAU)
+        k = 1.0 - math.exp(-dt / max(0.3, tau))
+        ncx, ncy = self.neutral  # type: ignore[misc]
+
+        # 横向平移：位置与脸宽一起跟随
+        if abs(dx_face) < C.NEUTRAL_ADAPT_GATE:
+            ncx += k * (st.cx - ncx)
+            self.nw += k * (st.w - self.nw)
+        # 摇头
+        if st.pose_ok and abs(yaw_sig) < C.NEUTRAL_ADAPT_GATE_YAW:
+            self.nyaw += k * (st.yaw - self.nyaw)
+        # 纵向平移：位置与脸高一起跟随
+        if abs(dy_face) < C.NEUTRAL_ADAPT_GATE:
+            ncy += k * (st.cy - ncy)
+            self.nh += k * (st.h - self.nh)
+        # 俯仰
+        if st.pose_ok and abs(p_raw) < C.NEUTRAL_ADAPT_GATE_P:
+            self.npitch += k * (st.pitch - self.npitch)
+
+        self.neutral = (ncx, ncy)
 
     def game_input(self) -> GameInput:
         # found 传的是**迟滞后的**状态：短暂丢帧期间仍然是 True，

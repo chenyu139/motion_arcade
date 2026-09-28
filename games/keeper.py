@@ -41,6 +41,7 @@ class KeeperGame(BaseGame):
     SUB = "头手各守半边"
     CATEGORY = "头部 + 手部"
     ACCENT = (120, 220, 176)
+    WORLD = "stadium"
     ICON = "glove"
     HOW = "头管左门将、手管右门将，20 球扑出 12 个"
     HINT = "头部控制左门将 · 手掌控制右门将"

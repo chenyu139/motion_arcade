@@ -37,6 +37,7 @@ class ClimbGame(BaseGame):
     SUB = "剑门关崖壁"
     CATEGORY = "头部控制"
     ACCENT = (196, 168, 120)
+    WORLD = "alpine"
     ICON = "climb"
     HOW = "左右挪到抓点下方，抬头向上抓，别被碎石砸中"
     HINT = "头部左右挪动 · 抬头抓握 · 站稳落脚点回体力"

@@ -38,6 +38,7 @@ class DrumGame(BaseGame):
     SUB = "跟着节奏敲鼓"
     CATEGORY = "头部控制"
     ACCENT = (232, 96, 76)
+    WORLD = "stage"
     ICON = "drum"
     HOW = "音符落到判定线时，击打对应的鼓"
     HINT = "头部左右选鼓 · 抬头击鼓 · 越准分越高"

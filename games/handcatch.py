@@ -43,6 +43,7 @@ class HandCatchGame(BaseGame):
     SUB = "三星堆祭祀坑"
     CATEGORY = "手部控制"
     ACCENT = (176, 196, 120)
+    WORLD = "temple"
     ICON = "hand"
     HOW = "张开手掌接住落下的青铜器，握拳会打飞"
     HINT = "移动手掌接物 · 保持张开 · 握拳会撞飞"

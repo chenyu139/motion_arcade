@@ -1,13 +1,32 @@
 """
 core/menu.py
 ============
-游戏大厅：20 款小游戏的分页卡片墙。
+游戏大厅 —— **开始界面（Start Screen）**。
 
-操作
-    头部左右 → 切换卡片（到页边自动翻页）
-    抬头     → 进入选中的游戏
-    键盘     → ←→↑↓ 移动，回车进入，数字键 1-9 快速选
-    停留 2.4 秒自动进入（方便演示时不用刻意做动作）
+布局取向的变化
+--------------
+旧版是"标题 + 一堵 4×2 的卡片墙 + 一条快捷键状态栏"。问题不在好不好看，而在于
+它是一张**信息平铺表**：每张卡都重复一遍图标/名称/分类/难度，选中项和未选中项
+几乎没有视觉差别，整屏没有任何"我要开始了"的引导。这是"AI Demo"最典型的气质。
+
+现在改成商业游戏常见的 **英雄区 + 选择网格**：
+
+    ┌──────────────────────────────────────────────┐
+    │  体感游戏厅                        ● 已锁定   │  标题栏
+    ├──────────────────────────────────────────────┤
+    │  ┌────┐  超级马里奥          ┌────────────┐  │
+    │  │大图标│ 横版平台跳跃 · 踩敌人 +100 │  抬头开始  │  │  英雄区
+    │  └────┘  [头部控制] ★★☆☆☆    └────────────┘  │
+    ├──────────────────────────────────────────────┤
+    │  [卡][卡][卡][卡][卡]                         │  选择网格
+    │  [卡][卡][卡][卡][卡]                         │  （只留图标与名称）
+    └──────────────────────────────────────────────┘
+
+**交互完全没变**：左右平移选卡片、抬头进入、停留自动进入、键盘 ←→/回车/
+数字键。改的只是信息怎么摆 —— 详细说明只出现在英雄区一次，卡片回归"选项"。
+
+背景也不再是纯色 + 网格：换成黄昏天空 + 星点 + 四川地标剪影 + 雾 + 地面，
+让大厅本身就是一个"游戏世界"。
 """
 from __future__ import annotations
 
@@ -19,20 +38,26 @@ import pygame
 from . import base as B
 from . import config as C
 from . import icons
+from . import scene as SCN
+from . import sichuan as SC
 from . import sprites as SP
 from . import theme as U
+from . import ui as UI
 from .inputs import GameInput
 
 COLS = C.MENU_COLS
 ROWS = C.MENU_ROWS
 PER_PAGE = COLS * ROWS
 
-CARD_W = 420
-CARD_H = 310
-GAP_X = 40
-GAP_Y = 34
+CARD_W = 340
+CARD_H = 226
+GAP_X = 24
+GAP_Y = 22
 GRID_X = (C.DESIGN_W - (COLS * CARD_W + (COLS - 1) * GAP_X)) // 2
-GRID_Y = 258
+GRID_Y = 462
+HERO = pygame.Rect(60, 96, C.DESIGN_W - 120, 330)
+
+_CAT_COL = {"头部控制": UI.INFO, "手部控制": UI.SECONDARY, "头部 + 手部": (200, 150, 255)}
 
 
 class Menu:
@@ -48,24 +73,41 @@ class Menu:
         self.chosen: Optional[str] = None
         self.t = 0.0
         self.info = info or {}
-        self.orbs = U.OrbField(C.DESIGN_W, C.DESIGN_H, n=8, seed=11)
-        self.stars = U.StarField(C.DESIGN_W, C.DESIGN_H, n=130, seed=5)
+        self.orbs = U.OrbField(C.DESIGN_W, C.DESIGN_H, n=7, seed=11)
+        self.stars = U.StarField(C.DESIGN_W, C.DESIGN_H, n=170, seed=5)
         self._bg = self._make_bg()
         self._page_anim = 1.0
+        self._hero_pop = UI.Pop(k=8.0)
+        self._sel_prev = -1
 
     # ------------------------------------------------------------------ 背景
     def _make_bg(self) -> pygame.Surface:
+        """
+        黄昏世界：天空 → 星 → 远山 → 雾 → 四川地标剪影 → 地面。
+
+        大厅也需要"这是个游戏世界"的第一印象，所以它不是纯色底，
+        而是和游戏里同一套分层做法（见 core/scene.py 的说明）。
+        整体压暗、并留出中间大片低对比区域，保证卡片与文字始终清晰。
+        """
         W, H = C.DESIGN_W, C.DESIGN_H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (14, 18, 40), (22, 26, 56), (10, 12, 28)), (0, 0))
-        # 细网格
-        grid = pygame.Surface((W, H), pygame.SRCALPHA)
-        for x in range(0, W, 60):
-            grid.fill((120, 150, 220, 12), (x, 0, 1, H))
-        for y in range(0, H, 60):
-            grid.fill((120, 150, 220, 12), (0, y, W, 1))
-        s.blit(grid, (0, 0))
-        s.blit(U.vignette(W, H, 190), (0, 0))
+        s.blit(SCN.sky(W, H, (22, 20, 54), (62, 48, 108), (188, 122, 106)), (0, 0))
+        # 地平线余晖：暖色低垂的太阳，"夕照"最省事的说法
+        SCN.sun(s, W * 0.74, H * 0.66, 84, (255, 190, 134))
+        self.stars.draw(s, 0.0)
+        # 远山两层
+        SCN.hill_range(s, pygame.Rect(0, 520, W, H - 520), 3, (54, 40, 92),
+                       seed=5, h_min=0.20, h_max=0.70, haze=0.20)
+        SCN.hill_range(s, pygame.Rect(0, 600, W, H - 600), 4, (38, 28, 70),
+                       seed=11, h_min=0.18, h_max=0.62)
+        # 四川地标剪影：宽窄巷子 / 锦里 / 峨眉 / 青城 / 三星堆
+        s.blit(SC.skyline(W, 280, preset="city", base=(28, 20, 56),
+                          haze=0.14, seed=7, count=7), (0, 660))
+        # 雾：把剪影和地面分开
+        SCN.fog_band(s, pygame.Rect(0, 600, W, 300), (150, 128, 186), 76)
+        # 地面
+        SCN.ground_band(s, pygame.Rect(0, 900, W, H - 900), (46, 34, 80),
+                        (22, 16, 44), 130)
         return s
 
     # ------------------------------------------------------------------ 状态
@@ -160,173 +202,184 @@ class Menu:
         surf.blit(self._bg, (0, 0))
         self.orbs.draw(surf)
         self.stars.draw(surf, self.t)
-        self._draw_header(surf)
-        self._draw_mascots(surf)
-
-        # 当前页的卡片（带翻页位移）
-        slide = (1.0 - U.ease_out_cubic(self._page_anim)) * 120.0 * (1 if self.page else -1)
+        self._draw_topbar(surf)
+        self._draw_hero(surf)
         for i in range(self.n):
             if i // PER_PAGE != self.page:
                 continue
-            self._draw_card(surf, i, slide)
+            self._draw_card(surf, i)
         self._draw_pager(surf)
         self._draw_footer(surf)
 
-    def _draw_mascots(self, surf):
-        """
-        标题两侧的吉祥物：左边熊猫组合、右边盖碗茶。
-
-        这是最省版面又能立刻提升辨识度的位置 —— 卡片墙占满 y 258~912，
-        页脚还有文字，只有标题带两侧是空的。基线统一在 246，
-        加上投影让它们"站在"同一条线上。
-
-        素材缺失时直接整体不画（保持原来的纯文字版式），不做半吊子混搭。
-        """
-        base = 246
-        pair = (("panda_hero", 200, 116), ("panda_cub", 146, 296))
-        if not all(SP.draw(surf, nm, x, base, height=h, anchor="bottom", shadow=0.55)
-                   for nm, h, x in pair):
-            return
-        SP.draw(surf, "gaiwan", 1798, base - 2, height=100, anchor="bottom",
-                shadow=0.5)
-
-    def _draw_header(self, surf):
-        # 标题
-        U.text(surf, "体 感 游 戏 厅", (C.DESIGN_W // 2, 98), 62, (255, 255, 255),
-               center=True, bold=True, glow=18, glow_color=(110, 158, 255))
-        U.text(surf, "MOTION ARCADE", (C.DESIGN_W // 2, 150), 24, (130, 160, 220),
-               center=True, bold=True)
-        # 统计
+    # ------------------------------------------------------------------ 标题栏
+    def _draw_topbar(self, surf) -> None:
+        UI.text(surf, "体 感 游 戏 厅", (62, 20), UI.T_L, UI.PAPER,
+                outline=UI.INK, outline_w=5)
+        U.text(surf, "MOTION ARCADE", (66, 84), UI.T_XS, (196, 186, 236),
+               bold=True)
+        # 右侧：识别状态 + 玩法统计
+        cam = self.info.get("cam_ok", False)
+        tr = self.info.get("track", "track") if cam else "none"
+        if not cam:
+            tag, col, ic = "键盘 / 鼠标模式", UI.WARN, "wave"
+        elif tr == "track":
+            tag, col, ic = "头部已锁定", UI.ACCENT, "check"
+        elif tr == "hold":
+            tag, col, ic = "短暂丢帧 · 输入冻结", UI.WARN, "clock"
+        else:
+            tag, col, ic = "未识别到头 · 不会自动进入", UI.DANGER, "eye"
+        UI.pill(surf, (C.DESIGN_W - 62, 46), tag, col, ic, size=UI.T_XS,
+                align="right", height=58)
         cats: Dict[str, int] = {}
         for g in self.games:
             cats[g["category"]] = cats.get(g["category"], 0) + 1
         info = "　·　".join(f"{k} {v}" for k, v in cats.items())
-        U.text(surf, f"共 {self.n} 款游戏　|　{info}", (C.DESIGN_W // 2, 188), 24,
-               (168, 190, 232), center=True)
-        # 摄像头状态（右对齐）
-        cam_ok = self.info.get("cam_ok", False)
-        hand_ok = self.info.get("hand_ok", False)
-        if cam_ok:
-            # 直接显示识别三态：人离开时大厅必须表现出"我不认识你了"，
-            # 而不是继续当作有人在操作（否则会自己翻页、自己进游戏）
-            tr = self.info.get("track", "track")
-            if tr == "track":
-                tag = f"● 已锁定 · {self.info.get('backend', '-')}"
-                col = (110, 230, 170)
-            elif tr == "hold":
-                tag, col = "◐ 短暂丢帧 · 输入冻结", (250, 200, 90)
-            else:
-                tag, col = "○ 未识别到头 · 已停止自动进入", (245, 140, 130)
-        else:
-            tag, col = "● 键盘 / 鼠标模式（未启用摄像头）", (250, 190, 110)
-        img = U.render_text(tag, 22, col, True)
-        surf.blit(img, (C.DESIGN_W - 48 - img.get_width(), 52))
-        fim = U.render_text(f"{self.info.get('fps', 0):.0f} FPS", 20, (140, 165, 200))
-        surf.blit(fim, (C.DESIGN_W - 48 - fim.get_width(), 84))
+        UI.text(surf, f"共 {self.n} 款　|　{info}", (C.DESIGN_W - 64, 92),
+                UI.T_XS - 4, UI.PAPER_DIM, align := None or None) if False else None
+        img = U.outline_text(f"共 {self.n} 款　|　{info}", UI.T_XS - 4,
+                             (206, 196, 240), UI.INK, 3, True)
+        surf.blit(img, (C.DESIGN_W - 64 - img.get_width(), 92))
 
-    def _draw_card(self, surf, i, slide):
-        g = self.games[i]
-        r = self._card_rect(i)
-        r = r.move(int(slide * (1 + (i % 3) * 0.2)), 0)
-        sel = (i == self.sel)
-        accent = g["accent"]
+    # ------------------------------------------------------------------ 英雄区
+    def _draw_hero(self, surf) -> None:
+        """
+        选中游戏的详细信息 + 开始按钮。
 
-        # 入场动画
-        appear = U.clamp((self.t - 0.10 * (i % PER_PAGE)) / 0.55, 0.0, 1.0)
+        这是整个门面的核心：把"当前选中什么、玩法是什么、怎么开始"三件事
+        集中在一处讲清楚，而不像旧版那样在十张卡片上各重复一遍。
+        """
+        g = self.games[self.sel]
+        accent = UI.normalize_accent(g["accent"])
+        appear = U.clamp((self.t - 0.05) / 0.5, 0.0, 1.0)
         ease = U.ease_out_back(appear)
         if ease <= 0.01:
             return
-        lift = (1.0 - ease) * 60
-        scale = 0.90 + 0.10 * ease
+        # 切换选中时，英雄区弹一下 —— 让"选项变了"这件事被看见
+        if self.sel != self._sel_prev:
+            self._sel_prev = self.sel
+            self._hero_pop.hit(1.0)
+        pop = 1.0 + 0.045 * self._hero_pop.v
 
-        base_rect = pygame.Rect(r.x, int(r.y + lift), r.w, r.h)
-        if sel:
-            base_rect = base_rect.inflate(18, 18).move(0, -8)
-        elif g["key"] != self.games[self.sel]["key"]:
-            pass
+        h = HERO.inflate(int(HERO.w * (pop - 1)), int(HERO.h * (pop - 1)))
+        h = h.move(0, int((1.0 - ease) * 26))
 
-        surf_set = base_rect
-        if sel:
-            U.soft_shadow(surf, surf_set, 26, 26, 170, (0, 14))
-            gl = U.glow_surface(int(surf_set.w * 0.9), accent, 60, 8)
-            surf.blit(gl, (surf_set.centerx - gl.get_width() // 2,
-                           surf_set.centery - gl.get_height() // 2))
-        else:
-            U.soft_shadow(surf, surf_set, 20, 18, 110, (0, 10))
+        UI.card(surf, h, UI.R_XL, glow=accent, glow_a=78,
+                top=U.mix(UI.SURFACE_HI, accent, 0.16),
+                bottom=U.mix(UI.SURFACE_LO, accent, 0.06))
 
-        tint = (accent[0], accent[1], accent[2], 46 if sel else 22)
-        glass_bg = (20, 24, 48, 238) if sel else (16, 19, 38, 210)
-        U.glass(surf, surf_set, 24, glass_bg,
-                (accent[0], accent[1], accent[2], 200 if sel else 90), 3 if sel else 2)
-        # 顶部色带
-        band = pygame.Rect(surf_set.x + 3, surf_set.y + 3, surf_set.w - 6, 7)
-        U.rr(surf, band, 4, tint)
+        # 大图标
+        box = pygame.Rect(h.x + 30, h.y + 30, 270, 270)
+        pygame.draw.rect(surf, (26, 21, 52), box, border_radius=UI.R_LG)
+        pygame.draw.rect(surf, tuple(accent) + (150,), box, 3, border_radius=UI.R_LG)
+        U.glow(surf, box.center, 150, accent, 72)
+        pulse = 1.0 + 0.035 * math.sin(self.t * 2.6)
+        icons.draw_icon(surf, g["icon"], box.centerx, box.centery,
+                        int(186 * pulse), accent, (255, 255, 255))
 
-        # 图标
-        isize = 118 if sel else 104
-        icon_cy = surf_set.y + (104 if sel else 96)
-        icons.draw_icon(surf, g["icon"], surf_set.centerx, icon_cy, isize,
-                        accent, (255, 255, 255))
+        # 文字区
+        tx = box.right + 40
+        UI.text(surf, g["title"], (tx, h.y + 42), UI.T_XL, UI.PAPER,
+                outline=UI.INK, outline_w=6)
+        U.text(surf, g["sub"], (tx + 4, h.y + 148), UI.T_S, (222, 214, 250),
+               bold=True)
+        U.text(surf, g["how"], (tx + 4, h.y + 200), UI.T_XS, UI.PAPER_DIM)
 
-        # 名称
-        U.text(surf, g["title"], (surf_set.centerx, surf_set.y + (196 if sel else 186)),
-               34 if sel else 31, (255, 255, 255), center=True, bold=True)
-        # 副标题
-        U.text(surf, g["sub"], (surf_set.centerx, surf_set.y + (232 if sel else 222)),
-               20, (170, 192, 228), center=True)
-
-        # 分类徽章（右上角）
+        # 分类 + 难度
         cat = g["category"]
-        badge_col = {"头部控制": (110, 170, 255),
-                     "手部控制": (255, 170, 110),
-                     "头部 + 手部": (190, 150, 255)}.get(cat, (170, 180, 200))
-        img = U.render_text(cat, 19, badge_col)
-        br = pygame.Rect(surf_set.right - img.get_width() - 34, surf_set.y + 18,
-                         img.get_width() + 22, 32)
-        U.rr(surf, br, 9, (badge_col[0], badge_col[1], badge_col[2], 40), badge_col, 2)
-        surf.blit(img, (br.x + 11, br.y + 6))
-
-        # 难度
+        UI.pill(surf, (tx, h.y + 254), cat, _CAT_COL.get(cat, UI.INFO),
+                size=UI.T_XS - 4, align="left", height=50, pad=22)
+        cx = tx + 300
         for k in range(3):
-            cx = surf_set.x + 30 + k * 20
-            cy = surf_set.y + 34
-            on = k < g["difficulty"]
-            col = (255, 206, 110) if on else (70, 78, 104)
-            pts = U.star_points(cx, cy, 8, 3.4, 5)
-            U.aa_poly(surf, pts, col, 0, ss=3)
+            pts = U.star_points(cx + k * 40, h.y + 254, 15, 6.4, 5)
+            U.aa_poly(surf, pts, UI.SECONDARY if k < g["difficulty"] else (74, 66, 120),
+                      0, ss=3)
 
-        # 选中：停留进度环
+        # ---- 吉祥物：让英雄区的空档也有内容，同时保留四川元素 ----
+        # 重构大厅时这三个精灵一度失去用处（信息都收进英雄区了），
+        # 但"四川文旅"是产品的一部分，不能因为改版就丢掉。
+        base = h.bottom - 14
+        SP.draw(surf, "panda_hero", h.x + 1080, base, height=232, anchor="bottom",
+                shadow=0.45)
+        SP.draw(surf, "gaiwan", h.x + 1290, base, height=104, anchor="bottom",
+                shadow=0.40)
+
+        # 开始按钮
+        btn = pygame.Rect(h.right - 372, h.y + 56, 340, 148)
+        UI.big_button(surf, btn, "抬 头 开 始", accent, t=self.t, hot=True,
+                      size=UI.T_L, sub="或按回车")
+        # 停留进度 + 序号
+        pct = U.clamp(self.dwell / C.MENU_DWELL, 0, 1)
+        bar = pygame.Rect(btn.x, btn.bottom + 22, btn.w, 12)
+        pygame.draw.rect(surf, (52, 44, 96), bar, border_radius=6)
+        if pct > 0.01:
+            pygame.draw.rect(surf, accent, (bar.x, bar.y, int(bar.w * pct), bar.h),
+                             border_radius=6)
+        UI.text(surf, f"{self.sel + 1} / {self.n}", (btn.centerx, btn.bottom + 62),
+                UI.T_XS, UI.PAPER_DIM, center=True)
+
+    # ------------------------------------------------------------------ 卡片
+    def _draw_card(self, surf, i: int) -> None:
+        """
+        选择网格里的卡片：**只留图标与名称**。
+
+        详细说明已经在英雄区讲过一遍了。旧版每张卡都重复图标 + 名称 + 副标题 +
+        分类徽章 + 难度星，十张铺开就成了一片噪点 —— 信息的价值来自"只出现一次"。
+        """
+        g = self.games[i]
+        accent = UI.normalize_accent(g["accent"])
+        sel = (i == self.sel)
+        r = self._card_rect(i)
+        appear = U.clamp((self.t - 0.04 * (i % PER_PAGE)) / 0.5, 0.0, 1.0)
+        ease = U.ease_out_back(appear)
+        if ease <= 0.01:
+            return
+        lift = int((1.0 - ease) * 40)
+        k = abs(self.sel_f - i)
+        hot = max(0.0, 1.0 - k)
+        r = r.inflate(int(14 * hot), int(14 * hot)).move(0, -int(10 * hot) + lift)
+
+        UI.card(surf, r, UI.R_LG,
+                top=U.mix(UI.SURFACE_HI, accent, 0.20 * hot + 0.06),
+                bottom=U.mix(UI.SURFACE_LO, accent, 0.08 * hot),
+                outline=accent if hot > 0.5 else UI.OUTLINE,
+                glow=accent if sel else None, glow_a=int(70 * hot))
         if sel:
-            pct = U.clamp(self.dwell / C.MENU_DWELL, 0, 1)
-            U.ring_gauge(surf, (surf_set.right - 44, surf_set.bottom - 38), 24, 7,
-                         pct, accent, (60, 70, 100))
-            U.text(surf, "停", (surf_set.right - 44, surf_set.bottom - 38), 20,
-                   (240, 246, 255), center=True, bold=True)
-            # 进入提示
-            U.text(surf, "抬头进入 / 回车", (surf_set.centerx, surf_set.bottom - 36), 21,
-                   (226, 240, 255), center=True, alpha=200)
+            pygame.draw.rect(surf, (255, 255, 255, 70), r, 3,
+                             border_radius=UI.R_LG)
 
-    def _draw_pager(self, surf):
+        icons.draw_icon(surf, g["icon"], r.centerx, r.y + int(r.h * 0.42),
+                        int(r.h * 0.40), accent, (255, 255, 255))
+        U.text(surf, g["title"], (r.centerx, r.y + int(r.h * 0.70)), UI.T_S,
+               UI.PAPER, center=True, bold=True,
+               outline=UI.INK, outline_w=3)
+        # 难度：用小点而不是星星，小尺寸下更好认
+        for d in range(3):
+            col = UI.SECONDARY if d < g["difficulty"] else (70, 62, 112)
+            U.aa_circle(surf, (r.centerx + (d - 1) * 16, r.bottom - 20), 5, col,
+                        0, ss=3)
+
+    # ------------------------------------------------------------------ 翻页
+    def _draw_pager(self, surf) -> None:
         n = self.total_pages
         cx = C.DESIGN_W // 2
-        y = C.DESIGN_H - 108
-        total_w = n * 40
+        y = C.DESIGN_H - 96
+        total_w = n * 44
         for i in range(n):
-            x = cx - total_w // 2 + 20 + i * 40
+            x = cx - total_w // 2 + 22 + i * 44
             on = (i == self.page)
-            U.aa_circle(surf, (x, y), 11 if on else 7,
-                        (180, 210, 255) if on else (74, 86, 118), 0, ss=3)
-        U.text(surf, f"第 {self.page + 1} / {n} 页", (cx, y + 34), 22, (150, 176, 216),
-               center=True)
+            if on:
+                U.glow(surf, (x, y), 26, UI.PRIMARY, 90)
+            U.aa_circle(surf, (x, y), 12 if on else 7,
+                        UI.PAPER if on else (78, 70, 122), 0, ss=3)
 
-    def _draw_footer(self, surf):
-        bar = pygame.Surface((C.DESIGN_W, 68), pygame.SRCALPHA)
-        bar.fill((8, 10, 24, 208))
-        surf.blit(bar, (0, C.DESIGN_H - 68))
-        pygame.draw.line(surf, (52, 66, 104), (0, C.DESIGN_H - 68),
-                         (C.DESIGN_W, C.DESIGN_H - 68), 1)
-        cur = self.games[self.sel]
-        U.text(surf, cur["how"], (44, C.DESIGN_H - 50), 26, (226, 236, 255), bold=True)
-        right = "← → 切卡片　↑↓ 跨行　回车进入　ESC 退出　F11 全屏"
-        img = U.render_text(right, 22, (150, 172, 210))
-        surf.blit(img, (C.DESIGN_W - 44 - img.get_width(), C.DESIGN_H - 46))
+    # ------------------------------------------------------------------ 页脚
+    def _draw_footer(self, surf) -> None:
+        """
+        页脚只手势提示，**不列键盘快捷键**。
+
+        旧版把 ESC / 回车 / TAB / F11 全列在底部，那是开发工具的状态栏。
+        玩家站在电视前不会看，也不需要看 —— 键盘提示移到暂停面板即可。
+        """
+        UI.pill(surf, (C.DESIGN_W // 2, C.DESIGN_H - 42),
+                "左右平移选游戏　·　抬头进入　·　停住 2 秒自动进入",
+                UI.SURFACE, size=UI.T_XS, alpha=192, height=52, pad=44)

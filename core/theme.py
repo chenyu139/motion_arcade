@@ -195,6 +195,43 @@ def glow_text(s: str, size: int, color: Color, bold: bool, radius: int) -> pygam
     return g
 
 
+_outline_txt_cache: Dict[Tuple, pygame.Surface] = {}
+
+
+def outline_text(s: str, size: int, color: Color, outline: Color,
+                 width: int = 3, bold: bool = True) -> pygame.Surface:
+    """
+    带描边的文字（卡通游戏的地基）。
+
+    为什么要描边：这套 UI 的文字要压在天空、草地、彩纸这类花花绿绿的背景上，
+    没有描边会直接糊掉 —— 这是"专业"和"业余"最直观的差别。
+
+    做法是 8 方向偏移重绘描边色，再盖上本体。**整张合成结果会被缓存**，
+    所以每帧只花一次 blit（不做缓存的话每个字每帧要 9 次重绘）。
+    """
+    key = (s, size, _safe(color), _safe(outline), int(width), bold)
+    img = _outline_txt_cache.get(key)
+    if img is not None:
+        return img
+    base = render_text(s, size, outline, bold)
+    w = max(1, int(width))
+    pad = w + 2
+    surf = pygame.Surface((base.get_width() + pad * 2,
+                           base.get_height() + pad * 2), pygame.SRCALPHA)
+    # 8 方向 + 4 个半程，凑出接近圆形的外扩
+    offs = [(w, 0), (-w, 0), (0, w), (0, -w),
+            (w, w), (w, -w), (-w, w), (-w, -w),
+            (w // 2, w), (-w // 2, w), (w, w // 2), (w, -w // 2),
+            (-w // 2, -w), (w // 2, -w), (-w, w // 2), (-w, -w // 2)]
+    for dx, dy in offs:
+        surf.blit(base, (pad + dx, pad + dy))
+    surf.blit(render_text(s, size, color, bold), (pad, pad))
+    if len(_outline_txt_cache) > 1200:
+        _outline_txt_cache.clear()
+    _outline_txt_cache[key] = surf
+    return surf
+
+
 def text(
     surf: pygame.Surface,
     s: str,
@@ -208,8 +245,23 @@ def text(
     glow_color: Optional[Color] = None,
     bold: bool = False,
     alpha: int = 255,
+    outline: Optional[Color] = None,
+    outline_w: int = 3,
 ) -> pygame.Rect:
-    """绘制文字。shadow=偏移像素；glow=光晕半径。返回占位 Rect。"""
+    """绘制文字。shadow=偏移像素；glow=光晕半径；outline=卡通描边色。"""
+    if outline is not None:
+        img = outline_text(s, size, color, outline, outline_w, bold)
+        pad = outline_w + 2
+        r = img.get_rect()
+        r.topleft = (pos[0] - pad, pos[1] - pad)
+        if center:
+            r.center = pos
+        if alpha < 255:
+            img = img.copy()
+            img.set_alpha(alpha)
+        surf.blit(img, r)
+        return r
+
     img = render_text(s, size, color, bold)
     r = img.get_rect()
     r.topleft = pos
@@ -238,6 +290,38 @@ def text(
 # 渐变（带缓存）
 # =========================================================================== #
 _grad_cache: Dict[Tuple, pygame.Surface] = {}
+# =========================================================================== #
+# 表面缓存的内存预算
+# =========================================================================== #
+_PX_USED: Dict[str, int] = {}
+# 每个缓存各约 18M 像素（≈72MB）上限。
+# 为什么不能只按"条数"封顶：一张全屏渐变就是 1920×1080×4 = 8MB，
+# 一张结算面板卡片 3.7MB —— 真机实测 995 条 bake 缓存占了 138MB、
+# 178 条渐变缓存占 79MB，合计把常驻内存推到了 1.2GB。
+# 按**总像素**封顶后，占用与内存的对应关系才可控。
+_CACHE_LIMIT_PX = 11_000_000
+
+
+def clear_transient() -> None:
+    """清掉所有"可重建"的表面缓存（内存吃紧时调用，代价只是重建一次）。"""
+    _grad_cache.clear()
+    _px_clear()
+
+
+def _px_clear() -> None:
+    _PX_USED.clear()
+
+
+def _budget(tag: str, cache: Dict, add_px: int) -> None:
+    """给表面缓存记账；超预算就整体清空（这些表面都能立即重建）。"""
+    used = _PX_USED.get(tag, 0)
+    if used + add_px > _CACHE_LIMIT_PX:
+        cache.clear()
+        used = 0
+    _PX_USED[tag] = used + add_px
+
+
+
 
 
 def _grad_array(w: int, h: int, c1: Sequence[int], c2: Sequence[int], vertical: bool, c3: Optional[Sequence[int]] = None) -> np.ndarray:
@@ -273,6 +357,7 @@ def vgrad(w: int, h: int, top: Sequence[int], bottom: Sequence[int]) -> pygame.S
         arr = (c1 + (c2 - c1) * k).astype(np.uint8)
         arr = np.repeat(arr, w, axis=1)
         s = pygame.surfarray.make_surface(arr.swapaxes(0, 1))
+        _budget("grad", _grad_cache, s.get_width() * s.get_height())
         _grad_cache[key] = s
     return s
 
@@ -288,6 +373,7 @@ def hgrad(w: int, h: int, left: Sequence[int], right: Sequence[int]) -> pygame.S
         arr = (c1 + (c2 - c1) * k).astype(np.uint8)
         arr = np.repeat(arr, h, axis=0)
         s = pygame.surfarray.make_surface(arr.swapaxes(0, 1))
+        _budget("grad", _grad_cache, s.get_width() * s.get_height())
         _grad_cache[key] = s
     return s
 
@@ -306,6 +392,7 @@ def vgrad3(w: int, h: int, a: Sequence[int], b: Sequence[int], c: Sequence[int])
         arr = ((ca + (cb - ca) * ka) * (1 - kb) + (cb + (cc - cb) * kb) * kb).astype(np.uint8)
         arr = np.repeat(arr, w, axis=1)
         s = pygame.surfarray.make_surface(arr.swapaxes(0, 1))
+        _budget("grad", _grad_cache, s.get_width() * s.get_height())
         _grad_cache[key] = s
     return s
 
@@ -433,8 +520,22 @@ def glass(
 _glow_cache: Dict[Tuple, pygame.Surface] = {}
 
 
+def _quant_radius(r: int) -> int:
+    """
+    光晕半径量化。
+
+    动画里的半径是连续值（呼吸、脉冲），不量化的话每一帧都是一个新键，
+    缓存立刻被冲爆并不断重建 —— 而一次重建要画 10 层最大到 2r 直径的圆，
+    大半径下非常贵。按尺寸分档量化后，视觉上完全看不出差别。
+    """
+    r = max(2, int(r))
+    step = 2 if r < 60 else (4 if r < 160 else 8)
+    return max(2, (r + step // 2) // step * step)
+
+
 def glow_surface(radius: int, color: Sequence[int], max_alpha: int = 110, layers: int = 10) -> pygame.Surface:
-    """径向光晕（同心圆递减），带缓存。"""
+    """径向光晕（同心圆递减），带缓存（半径为量化键，见 _quant_radius）。"""
+    radius = _quant_radius(radius)
     key = (radius, tuple(color[:3]), max_alpha, layers)
     s = _glow_cache.get(key)
     if s is not None:
@@ -447,6 +548,7 @@ def glow_surface(radius: int, color: Sequence[int], max_alpha: int = 110, layers
         pygame.draw.circle(s, (color[0], color[1], color[2], a), (radius, radius), int(radius * t))
     if len(_glow_cache) > 400:
         _glow_cache.clear()
+    _budget("glow", _glow_cache, s.get_width() * s.get_height())
     _glow_cache[key] = s
     return s
 
@@ -516,12 +618,20 @@ class Particles:
             alive.append(p)
         self.items = alive
 
-    def draw(self, surf: pygame.Surface) -> None:
-        """全部粒子先画进一张 SRCALPHA 图层，再一次性合成 —— 避免逐粒子建面导致掉帧。"""
+    def draw(self, surf: pygame.Surface, origin: Tuple[float, float] = (0.0, 0.0),
+             scale: float = 1.0) -> None:
+        """
+        全部粒子先画进一张 SRCALPHA 图层，再一次性合成 —— 避免逐粒子建面导致掉帧。
+
+        origin / scale 用于**把同一套粒子贴到任意区域**：
+        发射时用的是 0~100 的归一化坐标，所以传 scale=区域宽/100 与区域左上角，
+        就能把粒子铺进一个面板；不传则按像素坐标直接铺满整屏。
+        """
         if not self.items:
             return
         size = surf.get_size()
         layer = _particle_layer(size)
+        ox, oy = origin
         for p in self.items:
             t = clamp(p["life"] / max(1e-6, p["max_life"]), 0.0, 1.0)
             a = int(255 * (t ** 0.6)) if p["fade"] else 255
@@ -529,7 +639,7 @@ class Particles:
                 continue
             c = p["color"]
             col = _safe((c[0], c[1], c[2], a))
-            x, y = int(p["x"]), int(p["y"])
+            x, y = int(ox + p["x"] * scale), int(oy + p["y"] * scale)
             if x < -30 or y < -30 or x > size[0] + 30 or y > size[1] + 30:
                 continue
             r = max(1, int(p["size"] * (0.45 + 0.55 * t)))
@@ -538,6 +648,21 @@ class Particles:
                 pygame.draw.circle(layer, col, (x, y), r)
             elif sh == "square":
                 pygame.draw.rect(layer, col, pygame.Rect(x - r, y - r, r * 2, r * 2))
+            elif sh == "star":
+                # 星星：命中/得分反馈的主力形状，比圆点"值钱"得多
+                pts = star_points(x, y, r * 2.1, r * 0.9, 5, p["angle"])
+                pygame.draw.polygon(layer, col, pts)
+            elif sh == "confetti":
+                # 彩纸：旋转的小矩形，用在通关庆祝
+                ca, sa = math.cos(p["angle"]), math.sin(p["angle"])
+                w2, h2 = r * 1.9, r * 0.85
+                pts = []
+                for dx, dy in ((-w2, -h2), (w2, -h2), (w2, h2), (-w2, h2)):
+                    pts.append((x + dx * ca - dy * sa, y + dx * sa + dy * ca))
+                pygame.draw.polygon(layer, col, pts)
+            elif sh == "glow":
+                g = glow_surface(max(4, r * 3), p["color"], 150, 6)
+                layer.blit(g, (x - g.get_width() // 2, y - g.get_height() // 2))
             else:  # streak
                 ln = r * 5
                 dx = math.cos(p["angle"]) * ln
@@ -676,8 +801,7 @@ def bake(
     draw_fn(big)
     s = pygame.transform.smoothscale(big, (w, h))
     if cacheable:
-        if len(_bake_cache) > _BAKE_MAX_ENTRIES:
-            _bake_cache.clear()
+        _budget("bake", _bake_cache, s.get_width() * s.get_height())
         _bake_cache[ck] = s
     return s
 
@@ -825,8 +949,7 @@ def scaled(base: pygame.Surface, key, size: Tuple[int, int], step: int = 4) -> p
     s = _bake_cache.get(ck)
     if s is None:
         s = pygame.transform.smoothscale(base, (w, h))
-        if len(_bake_cache) > _BAKE_MAX_ENTRIES:
-            _bake_cache.clear()
+        _budget("bake", _bake_cache, s.get_width() * s.get_height())
         _bake_cache[ck] = s
     return s
 
@@ -888,6 +1011,7 @@ def radial(w: int, h: int, inner: Sequence[int], outer: Sequence[int],
             s = pygame.image.frombuffer(arr.tobytes(), (w, h), "RGBA").convert_alpha()
         else:
             s = pygame.surfarray.make_surface(arr.swapaxes(0, 1))
+        _budget("grad", _grad_cache, s.get_width() * s.get_height())
         _grad_cache[key] = s
     return s
 
@@ -905,6 +1029,7 @@ def vignette(w: int, h: int, strength: int = 120, power: float = 1.6) -> pygame.
         arr = np.zeros((h, w, 4), dtype=np.uint8)
         arr[..., 3] = a
         s = pygame.image.frombuffer(arr.tobytes(), (w, h), "RGBA").convert_alpha()
+        _budget("grad", _grad_cache, s.get_width() * s.get_height())
         _grad_cache[key] = s
     return s
 

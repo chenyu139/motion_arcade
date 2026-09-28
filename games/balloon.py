@@ -36,6 +36,7 @@ class BalloonGame(BaseGame):
     SUB = "别让气球落地"
     CATEGORY = "手部控制"
     ACCENT = (244, 158, 168)
+    WORLD = "forest"
     ICON = "balloon"
     HOW = "用手掌把气球拍回空中，落地就丢命"
     HINT = "移动手掌轻拍气球 · 手越快弹力越强"

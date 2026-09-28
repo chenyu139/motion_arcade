@@ -36,6 +36,7 @@ class DinoGame(BaseGame):
     SUB = "金沙遗址飞行穿越"
     CATEGORY = "头部控制"
     ACCENT = (238, 190, 88)
+    WORLD = "meadow"
     ICON = "bird"
     HOW = "抬头扇翅往上飞，穿过一对对金杖立柱"
     HINT = "抬头持续上升 · 放松就下坠 · 撞柱结束"

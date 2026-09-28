@@ -39,6 +39,7 @@ class HoopGame(BaseGame):
     SUB = "掌上准星"
     CATEGORY = "手部控制"
     ACCENT = (238, 148, 62)
+    WORLD = "court"
     ICON = "hoop"
     HOW = "握拳蓄力，掌心抬高，松开出手"
     HINT = "手掌高低决定弧线 · 握拳蓄力 · 张开出手"

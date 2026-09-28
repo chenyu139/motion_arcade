@@ -35,6 +35,7 @@ class SkiGame(BaseGame):
     SUB = "S 形雪道速降"
     CATEGORY = "头部控制"
     ACCENT = (108, 190, 246)
+    WORLD = "alpine"
     ICON = "ski"
     HOW = "跟着雪道走，别撞树，穿旗门加分"
     HINT = "头部左右转向 · 抬头跳过雪包"

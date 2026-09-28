@@ -56,6 +56,7 @@ class FootballGame(BaseGame):
     SUB = "四川省城市足球联赛"
     CATEGORY = "头部控制"
     ACCENT = (72, 196, 138)
+    WORLD = "stadium"
     ICON = "football"
     HOW = "瞄准球门死角，抬头起脚，10 球进 6 球"
     HINT = "头部左右瞄准 · 抬头射门 · 死角 +60 · 连击加成"

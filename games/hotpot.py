@@ -51,6 +51,7 @@ class HotpotGame(BaseGame):
     SUB = "红油锅里捞目标"
     CATEGORY = "头部控制"
     ACCENT = (236, 92, 72)
+    WORLD = "teahouse"
     ICON = "hotpot"
     HOW = "按提示捞出指定食材，别夹到辣椒"
     HINT = "头部左右移动筷子 · 抬头下筷 · 辣椒 = 扣命"

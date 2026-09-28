@@ -44,6 +44,7 @@ class FishingGame(BaseGame):
     SUB = "撒网捞江鲜"
     CATEGORY = "头部控制"
     ACCENT = (92, 176, 210)
+    WORLD = "river"
     ICON = "fish"
     HOW = "把网撒到鱼群上，垃圾别捞"
     HINT = "头部左右移动渔船 · 抬头撒网（越高越远）"

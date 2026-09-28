@@ -42,6 +42,7 @@ class SliceGame(BaseGame):
     SUB = "手掌劈果"
     CATEGORY = "手部控制"
     ACCENT = (246, 176, 76)
+    WORLD = "teahouse"
     ICON = "fruit"
     HOW = "挥手劈开飞起来的水果，别切到花椒"
     HINT = "手掌快速划过水果才能切开 · 花椒扣命"
