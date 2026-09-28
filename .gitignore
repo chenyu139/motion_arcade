@@ -30,3 +30,10 @@ _archive/
 
 # 真机诊断用的启动参数（.app 无法从 Finder 传参，改从这里读）
 run_args.txt
+
+# ---- 大文件：不入库（换成下载，见 README「模型文件」）----
+# screenshots/ 是 tools/shots.py、tools/shell_shots.py 的产物，随时可重新生成。
+# 它一度让 .git 涨到 207MB（历史里累计 183MB），现在只留本机、不进历史。
+screenshots/
+# MediaPipe 的三个 .task 模型（共 19MB）不在本机用到，需要时按 README 下载
+assets/models/*.task

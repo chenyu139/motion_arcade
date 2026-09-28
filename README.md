@@ -642,12 +642,40 @@ motion_arcade/
 ├── games/                  20 款游戏，每款一个文件，继承 BaseGame
 │   └── __init__.py         导入即注册
 │
-├── assets/models/          人脸检测模型（YuNet / Haar / MediaPipe）
+├── assets/models/          人脸检测模型（YuNet / Haar 入库；MediaPipe 的 .task 需自行下载）
 ├── assets/sprites/         12 张生成式原创素材（_raw/ 为原始生成图）
 ├── packaging/              launcher.m + Info.plist + build_app.sh
 ├── tools/                  无头测试工具（截图 / 性能 / 假玩家 / 抠底 / 行为断言）
-└── screenshots/            各游戏与大屏截图
+└── screenshots/            各游戏与大屏截图（git 忽略，由 tools/shots.py 生成）
 ```
+
+### 模型文件：哪几个入库、哪几个要自己下
+
+仓库里**只留运行时必需的小文件**，其余是可按需下载的大模型（不然 `.git` 会到 200MB+）：
+
+| 文件 | 大小 | 是否入库 | 用途 |
+|---|---|---|---|
+| `face_detection_yunet_2023mar.onnx` | 227 KB | ✅ 入库 | **人脸检测主力**，每帧都跑 |
+| `haarcascade_frontalface_default.xml` | 0.9 MB | ✅ 入库 | 兜底检测器（某些机器 YuNet 不可用时） |
+| `face_landmarker.task` | 3.6 MB | ⬇️ 自行下载 | MediaPipe 人脸（本机 SIGABRT，见下） |
+| `hand_landmarker.task` | 6.5 MB | ⬇️ 自行下载 | MediaPipe 手部 21 点 |
+| `pose_landmarker_full.task` | 9.0 MB | ⬇️ 自行下载 | MediaPipe 全身 33 点 |
+
+需要 Windows / Linux 上的 MediaPipe 后端时，把三个 `.task` 下载到 `assets/models/`：
+
+```bash
+cd assets/models
+B=https://storage.googleapis.com/mediapipe-models
+curl -O $B/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+curl -O $B/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+curl -O $B/pose_landmarker_full/pose_landmarker_full/float16/1/pose_landmarker_full.task
+```
+
+`assets/models/rtmpose_body.onnx`（ONNX Runtime 后端）不随仓库分发，下载地址见
+`core/vision/backend_onnx.py` 文件头。
+
+`screenshots/` 同理不入库：它是 `tools/shots.py` / `tools/shell_shots.py` 的产物，
+本机随时可重新生成（约 45MB，历史里曾有 183MB）。
 
 ### 加一个新游戏
 
