@@ -1,0 +1,32 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 构建产物 ----
+build/
+*.app/
+*.o
+*.dSYM/
+
+# ---- 运行时 ----
+run.log
+*.log
+.DS_Store
+
+# ---- 编辑器 ----
+.idea/
+.vscode/
+*.swp
+
+# 旧版本归档（v1，已被 motion_arcade 完整取代）
+_archive/
+
+# 虚拟环境符号链接 / 目录
+.venv
+
+# 真机诊断用的启动参数（.app 无法从 Finder 传参，改从这里读）
+run_args.txt
