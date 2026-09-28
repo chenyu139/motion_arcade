@@ -158,6 +158,10 @@ def run_probe(args) -> int:
 
     head, hand, body = HeadController(C), HandController(C), BodyController(C)
     stat = {"n": 0, "track": 0, "hold": 0, "lost": 0, "viol": 0}
+    # 抖动统计：这两组数才是"头没动却在乱选"的直接证据。
+    #  · 大厅阈值穿越次数：静止时它必须是 0
+    #  · 各路信号的峰峰值：能直接看出噪声有多大
+    stats = {"yaw_raw": [], "yaw_sig": [], "axis": [], "cross": 0, "on": False}
     dt = 1.0 / 60.0
     t0 = time.time()
     last = t0
@@ -182,6 +186,14 @@ def run_probe(args) -> int:
                 state = "lost"
             stat["n"] += 1
             stat[state] += 1
+            d = head._debug
+            stats["yaw_raw"].append(d.get("yaw_raw", 0.0))
+            stats["yaw_sig"].append(d.get("yaw_sig", 0.0))
+            stats["axis"].append(inp.axis)
+            now_on = abs(inp.axis) > C.MENU_SWITCH_TH
+            if now_on and not stats["on"]:
+                stats["cross"] += 1
+            stats["on"] = now_on
             # 关键断言：判定为"未识别"时，头部来源的输出必须严格为 0
             if state == "lost" and (inp.axis != 0.0 or inp.jump or inp.up != 0.0):
                 stat["viol"] += 1
@@ -226,6 +238,21 @@ def run_probe(args) -> int:
     print(f"        未识别期间仍有非零输出的帧数：{stat['viol']}　→ {verdict}")
     # 基线可信度：摇头/抬头准不准，一半取决于校准时的中性位是否合理。
     # 脸宽太小说明坐得太远（检测噪声会被放大），关键点不可信则姿态路径会退化。
+    def _pp(key):
+        v = stats[key]
+        return (max(v) - min(v)) if v else 0.0
+
+    n = max(1, len(stats["axis"]))
+    print(f"        抖动统计：大厅阈值穿越 {stats['cross']} 次"
+          f"（静止时应为 0）"
+          f"　轴量峰峰 {_pp('axis'):.3f}")
+    print(f"        摇头原始读数峰峰 {_pp('yaw_raw'):.3f}"
+          f"　低通后峰峰 {_pp('yaw_sig'):.3f}"
+          f"　→ 低通把它压掉了 "
+          f"{max(0.0, (1 - _pp('yaw_sig') / max(1e-6, _pp('yaw_raw')))) * 100:.0f}%")
+    if stats["cross"] > 2:
+        print(f"        ⚠ 静止时轴量多次越过大厅阈值（{stats['cross']} 次）："
+              "如果此时头没动，说明还有抖动没压住，请把这段日志发我。")
     fw = head.nw
     print(f"        中性位基线：脸宽 {fw:.3f}"
           f"（{'偏小，建议坐近一点' if fw < 0.09 else '正常'}）"

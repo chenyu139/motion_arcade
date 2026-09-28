@@ -79,6 +79,10 @@ class Menu:
         self._page_anim = 1.0
         self._hero_pop = UI.Pop(k=8.0)
         self._sel_prev = -1
+        # 方向保持计时（见 update 里的切换逻辑）。这里必须和 reset() 一样
+        # 初始化 —— __init__ 不会自动调用 reset()，漏了就是"第一帧崩"。
+        self._dir = 0
+        self._dir_t = 0.0
 
     # ------------------------------------------------------------------ 背景
     def _make_bg(self) -> pygame.Surface:
@@ -117,6 +121,8 @@ class Menu:
 
     def reset(self) -> None:
         self.chosen = None
+        self._dir = 0
+        self._dir_t = 0.0
         self.enter_t = 0.0
         self.dwell = 0.0
         self.cool = 0.4
@@ -143,11 +149,20 @@ class Menu:
 
         # 头部 / 键盘切换
         moved = 0
-        if self.cool <= 0:
-            if inp.axis < -0.52:
-                moved = -1
-            elif inp.axis > 0.52:
-                moved = 1
+        # 方向必须**持续**够久才切。上游已经有起振门限与迟滞，这里再加一道：
+        # 大厅是最不能抖的地方 —— 抖一格就是"我刚才明明没动"。
+        d = 0
+        if inp.axis < -C.MENU_SWITCH_TH:
+            d = -1
+        elif inp.axis > C.MENU_SWITCH_TH:
+            d = 1
+        if d != self._dir:
+            self._dir = d
+            self._dir_t = 0.0
+        else:
+            self._dir_t += dt
+        if self.cool <= 0 and d != 0 and self._dir_t >= C.MENU_SWITCH_HOLD:
+            moved = d
             if moved:
                 self.cool = C.MENU_SWITCH_COOLDOWN
                 self.sel = (self.sel + moved) % self.n

@@ -30,6 +30,8 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
+
 from core import config as C            # noqa: E402
 from core.inputs import FaceState, HeadController   # noqa: E402
 
@@ -471,6 +473,175 @@ def test_adapt_channels_independent() -> None:
 
 
 
+
+# --------------------------------------------------------------------------- #
+# 传感器噪声
+# --------------------------------------------------------------------------- #
+def _noisy_run(yaw_mean: float, sigma: float, secs: float = 8.0, seed: int = 3):
+    """喂一段带噪声的静止序列，返回逐帧的 axis 序列。"""
+    rng = np.random.default_rng(seed)
+    hc = calibrated()
+    out = []
+    n = int(secs / DT)
+    for _ in range(n):
+        y = yaw_mean + rng.normal(0.0, sigma)
+        hc.update(face(cx=0.5, yaw=y), DT)
+        out.append(hc.axis)
+    return out
+
+
+def _stats(seq):
+    import math
+    flips = 0
+    on = False
+    for v in seq:
+        cur = abs(v) > 1e-9
+        if cur != on:
+            flips += 1
+            on = cur
+    return flips, max(abs(v) for v in seq)
+
+
+def test_noise_does_not_chatter() -> None:
+    """
+    **传感器噪声不得变成控制量。**
+
+    这是真机事故："头没动，选游戏的地方一直不停在左右选择"。
+
+    原因：摇头读数 = 鼻尖相对双眼中点的位移 ÷ 半眼距，而检测图只有 320 宽 ——
+    脸宽 ≈64px、眼距 ≈27px，**半眼距只有 13px**。也就是说
+        · 鼻尖抖动 1px → yaw 噪声 0.07
+        · 鼻尖抖动 3px → yaw 噪声 0.22（正好等于死区）
+    摇头在接进横向控制之前，这点噪声无害；接进来之后就**直接变成控制量**。
+    第一版测试全用干净合成信号，所以完全没抓到 —— 噪声必须进测试。
+
+    三条修法各自断言：重低通、死区迟滞、起振门限。
+    """
+    print("\n[19] 静止 + 传感器噪声不得产生控制量（真机事故回归）")
+    for tag, mean, sigma in (("无偏置", 0.0, 0.15), ("小偏置", 0.12, 0.15),
+                             ("大偏置", 0.20, 0.18), ("极端噪声", 0.0, 0.28)):
+        seq = _noisy_run(mean, sigma)
+        flips, peak = _stats(seq)
+        over = sum(1 for v in seq if abs(v) > C.MENU_SWITCH_TH)
+        print(f"      {tag:6s} 均值{mean:+.2f} σ={sigma:.2f} → "
+              f"抖动翻转 {flips:3d} 次  峰值 {peak:.2f}  超过大厅阈值 {over} 帧")
+        check(f"{tag}：输出不在 0 与非 0 之间反复跳（翻转 ≤ 2）", flips <= 2,
+              f"翻转 {flips} 次")
+        check(f"{tag}：不会跨过大厅切换阈值", over == 0, f"{over} 帧越界")
+
+
+def test_noise_keeps_responsiveness() -> None:
+    """抗抖动不能把真实操作一起滤掉 —— 那会变成"怎么动都没反应"。"""
+    print("\n[20] 加了抗抖动之后，真实摇头仍要跟得上")
+    rng = np.random.default_rng(11)
+    for tag, yaw, lo, hi in (("自然转头", 0.70, 0.30, 0.80),
+                             ("大幅转头", 1.40, 0.80, 1.05),
+                             ("反向转头", -0.70, 0.30, 0.80)):
+        hc = calibrated()
+        for _ in range(int(1.2 / DT)):                 # 1.2 秒持续转头
+            hc.update(face(cx=0.5, yaw=yaw + rng.normal(0, 0.12)), DT)
+        val = abs(hc.axis)
+        print(f"      {tag}：yaw{yaw:+.2f} → |axis|={val:.3f}")
+        check(f"{tag} 输出落在预期区间 [{lo}, {hi}]", lo <= val <= hi,
+              f"{val:.3f}")
+    # 起振延迟必须短到感觉不到
+    hc = calibrated()
+    t = 0.0
+    for i in range(120):
+        hc.update(face(cx=0.5, yaw=1.20), DT)
+        t += DT
+        if abs(hc.axis) > 0.30:
+            break
+    print(f"      从静止到输出 0.30 用时 {t * 1000:.0f} ms")
+    check("起振延迟 < 220ms（感觉不到）", t < 0.22, f"{t * 1000:.0f} ms")
+
+
+def test_single_spike_rejected() -> None:
+    """单个尖峰（一次误检 / 一次关键点跳变）必须被完全丢掉。"""
+    print("\n[21] 单帧尖峰必须被起振门限吃掉")
+    hc = calibrated()
+    for _ in range(60):
+        hc.update(face(cx=0.5, yaw=0.0), DT)
+    peak = 0.0
+    for i in range(30):
+        spike = 0.95 if i == 15 else 0.0        # 孤立一帧的假读数
+        hc.update(face(cx=0.5, yaw=spike), DT)
+        peak = max(peak, abs(hc.axis))
+    print(f"      孤立尖峰 yaw=0.95 → 之后轴量峰值 {peak:.3f}")
+    check("尖峰没有产生任何输出", peak < 1e-9, f"峰值 {peak:.4f}")
+
+    # 连续两帧也不行（起振门限是 90ms，两帧只有 66ms）
+    hc2 = calibrated()
+    for _ in range(60):
+        hc2.update(face(cx=0.5, yaw=0.0), DT)
+    peak2 = 0.0
+    for i in range(30):
+        spike = 0.95 if i in (15, 16) else 0.0
+        hc2.update(face(cx=0.5, yaw=spike), DT)
+        peak2 = max(peak2, abs(hc2.axis))
+    # 两帧尖峰经低通后会有几帧"尾巴"悬在迟滞阈值之上，所以这里**不断言
+    # "严格为 0"** —— 那是过度承诺。改成断言远小于可感知量：
+    # 大厅阈值是 0.52，这里必须低于满量的 2%。
+    check("两帧尖峰的影响可忽略（< 满量的 2%）", peak2 < 0.02,
+          f"峰值 {peak2:.4f}")
+
+    # 但要确认"持续的转头"不会被误杀（这是起振门限的代价边界）
+    hc3 = calibrated()
+    for _ in range(90):
+        hc3.update(face(cx=0.5, yaw=0.95), DT)
+    check("持续转头不被误杀（输出 > 0.5）", abs(hc3.axis) > 0.5,
+          f"axis={hc3.axis:+.3f}")
+
+
+def test_menu_selection_stable() -> None:
+    """
+    大厅是最不能抖的地方 —— 抖一格就是"我刚才明明没动"。
+
+    这里把「控制器 + 大厅」串起来跑一段带噪声的静止序列，
+    断言**一次都不会切**。
+    """
+    print("\n[22] 端到端：静止 + 噪声时大厅不得切换")
+    import pygame
+
+    import games          # noqa: F401  导入即注册（大厅要读游戏清单）
+    from core.menu import Menu
+
+    if pygame.display.get_surface() is None:
+        pygame.display.set_mode((320, 240))
+    rng = np.random.default_rng(5)
+    menu = Menu({"cam_ok": True, "hand_ok": True, "backend": "YuNet",
+                 "hand_backend": "Vision", "fps": 60.0, "track": "track"})
+    menu.reset()
+    hc = calibrated()
+    seq = []
+    for _ in range(300):                        # 10 秒
+        y = 0.10 + rng.normal(0.0, 0.17)
+        hc.update(face(cx=0.5, yaw=y), DT)
+        inp = hc.game_input()
+        inp.found = True
+        menu.update(DT, inp)
+        seq.append(menu.sel)
+    changed = sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+    print(f"      10 秒静止 → 选中项变化 {changed} 次（期望 0）")
+    check("静止时大厅选中项不变", changed == 0, f"变化 {changed} 次")
+
+    # 真实摇头必须能切（否则就是把交互也滤掉了）
+    hc2 = calibrated()
+    menu.reset()
+    seq2 = []
+    for i in range(240):
+        y = 0.90 if (i // 30) % 2 == 0 else -0.90   # 每 1 秒换一次方向
+        hc2.update(face(cx=0.5, yaw=y), DT)
+        inp = hc2.game_input()
+        inp.found = True
+        menu.update(DT, inp)
+        seq2.append(menu.sel)
+    changed2 = sum(1 for a, b in zip(seq2, seq2[1:]) if a != b)
+    print(f"      持续左右摇头 8 秒 → 选中项变化 {changed2} 次")
+    check("真实摇头仍能正常切换（≥ 3 次）", changed2 >= 3, f"变化 {changed2} 次")
+
+
+
 def test_config_refs() -> None:
     """静态检查：代码里引用的配置项是否都存在（含本轮新增的）。"""
     print("\n[14] 静态检查：配置项引用")
@@ -509,6 +680,10 @@ def main() -> int:
     test_yaw_pitch_decoupling()
     test_baseline_self_heal()
     test_adapt_channels_independent()
+    test_noise_does_not_chatter()
+    test_noise_keeps_responsiveness()
+    test_single_spike_rejected()
+    test_menu_selection_stable()
     test_geometry_roll_invariance()
     test_geometry_yaw_direction()
     test_pitch_direction()

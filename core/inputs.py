@@ -268,6 +268,12 @@ class HeadController:
         self._gap_t = 99.0             # 距上次松开时长
         self._prev_w = 0.0
         self._odd_t = 0.0              # "位移与尺度不自洽"已持续的时长
+        # ---- 抗抖动状态 ----
+        self._yaw_lp = 0.0             # 摇头信号的低通值
+        self._arm_t = 0.0              # "想离开死区"已持续的时长（起振门限用）
+        self._axis_on = False          # 上一次横向输出是否非零
+        self._move_on = False          # 平移那一路是否已在死区外（迟滞用）
+        self._yaw_on = False           # 摇头那一路是否已在死区外（迟滞用）
         self._settled_t = 0.0          # 校准完成后经过的时长（前几秒基线收敛更快）
         self._calib_pose_frames = 0    # 校准里姿态可信的帧数（用于提示用户）
         self._debug: dict = {}         # 给诊断用：各路原始信号
@@ -357,13 +363,42 @@ class HeadController:
         dy_face = (ncy - st.cy) / fh             # 正值 = 抬高
 
         # ---- 横向：平移 + 摇头，软最大融合 ----
-        a_move = _deadzone(dx_face, C.DEADZONE_FACE, C.FULL_SCALE_FACE)
-        yaw_sig = (st.yaw - self.nyaw) * C.YAW_SIGN if st.pose_ok else 0.0
-        a_yaw = (_deadzone(yaw_sig, C.YAW_DEADZONE, C.YAW_FULL_SCALE)
-                 if st.pose_ok else 0.0)
+        # ⚠ 摇头必须先做**重低通**再进死区。
+        #   摇头 = 鼻尖相对双眼中点的位移 ÷ 半眼距，而检测图上脸宽只有 ~64px、
+        #   半眼距只有 ~13px —— **鼻尖 1px 的定位抖动就等于 yaw 噪声 0.07**。
+        #   平移那一路量的是 64px 尺度上的位移，信噪比高得多，同一个时间常数够用；
+        #   摇头不是。不滤波的话这点噪声会直接变成控制量，现象就是
+        #   "头没动，选游戏的地方却一直不停左右选"。
+        yaw_raw = (st.yaw - self.nyaw) * C.YAW_SIGN if st.pose_ok else 0.0
+        kf = 1.0 - math.exp(-dt / max(1e-3, C.YAW_TAU))
+        self._yaw_lp += kf * (yaw_raw - self._yaw_lp)
+        yaw_sig = self._yaw_lp if st.pose_ok else 0.0
+
+        # 死区带迟滞：已经在"有控制"状态时用更低的退出阈值，
+        # 否则信号停在边界上会被噪声反复推出去、又退回来。
+        a_move = _deadzone(dx_face,
+                           C.DEADZONE_FACE * (C.AXIS_EXIT if self._move_on else 1.0),
+                           C.FULL_SCALE_FACE)
+        a_yaw = (_deadzone(yaw_sig,
+                           C.YAW_DEADZONE * (C.AXIS_EXIT if self._yaw_on else 1.0),
+                           C.YAW_FULL_SCALE) if st.pose_ok else 0.0)
+        self._move_on = a_move != 0.0
+        self._yaw_on = a_yaw != 0.0
+
         wm = abs(a_move) * C.MOVE_WEIGHT
         wy = abs(a_yaw) * C.YAW_WEIGHT
         raw = (a_move * wm + a_yaw * wy) / (wm + wy) if (wm + wy) > 1e-6 else 0.0
+
+        # 起振门限：从"静止"进入"有控制"必须持续 AXIS_ARM 秒。
+        # 单帧尖峰（一次误检、一次关键点跳变）到这里就被吃掉了 ——
+        # 它永远不会变成一个让角色动一下、或者让大厅跳一格的输出。
+        if raw != 0.0 and not self._axis_on:
+            self._arm_t += dt
+            if self._arm_t < C.AXIS_ARM:
+                raw = 0.0
+        else:
+            self._arm_t = 0.0
+        self._axis_on = raw != 0.0
 
         if was_lost:
             # 刚重新捕获：限制单帧跳变。假阳性（墙上的图案、路过的反光）
@@ -413,13 +448,14 @@ class HeadController:
         # 那就是"没抬头也触发了动作"的来源。抬头是俯仰变化，位移不是。
         self._settled_t += dt          # 校准后开始计时（基线收敛速度用）
         self._update_jump(jump_sig, st, dt)
-        self._adapt(dt, st, a_move, a_yaw, yaw_sig, p_raw,
+        self._adapt(dt, st, a_move, a_yaw, yaw_raw, p_raw,
                     dx_face, dy_face)
 
         self._debug = {
             "dx_face": round(dx_face, 3), "dy_face": round(dy_face, 3),
             "a_move": round(a_move, 3), "a_yaw": round(a_yaw, 3),
-            "yaw": round(st.yaw, 3), "yaw_sig": round(yaw_sig, 3),
+            "yaw": round(st.yaw, 3), "yaw_raw": round(yaw_raw, 3),
+            "yaw_sig": round(yaw_sig, 3),
             "pitch_raw": round(p_raw, 3),
             "pitch": round(p_sig, 3),
             "b_pitch": round(b_pitch, 3), "b_move": round(b_move, 3),
@@ -511,7 +547,7 @@ class HeadController:
         self._calib_pose_frames = len(good)
 
     def _adapt(self, dt: float, st: FaceState, a_move: float, a_yaw: float,
-               yaw_sig: float, p_raw: float, dx_face: float, dy_face: float) -> None:
+               yaw_gate: float, p_raw: float, dx_face: float, dy_face: float) -> None:
         """
         中性位自适应漂移（**逐通道独立**）。
 
@@ -545,8 +581,12 @@ class HeadController:
         if abs(dx_face) < C.NEUTRAL_ADAPT_GATE:
             ncx += k * (st.cx - ncx)
             self.nw += k * (st.w - self.nw)
-        # 摇头
-        if st.pose_ok and abs(yaw_sig) < C.NEUTRAL_ADAPT_GATE_YAW:
+        # 摇头。门限必须判**原始**读数而不是低通后的值 ——
+        # 用低通值会形成反馈环：滤波值从 0 缓慢上升，一开始总是"小于门限"，
+        # 于是基线在起振阶段就开始吸收这次转头；基线一动，差值就更小，
+        # 环就锁死了。实测后果是"持续转头 4 秒后输出衰减到 0.03"——
+        # 玩家会以为"转一会儿就没反应了"。判原始值就没有这个环。
+        if st.pose_ok and abs(yaw_gate) < C.NEUTRAL_ADAPT_GATE_YAW:
             self.nyaw += k * (st.yaw - self.nyaw)
         # 纵向平移：位置与脸高一起跟随
         if abs(dy_face) < C.NEUTRAL_ADAPT_GATE:
