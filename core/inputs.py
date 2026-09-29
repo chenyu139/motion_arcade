@@ -704,109 +704,255 @@ class HeadController:
 
 
 # =========================================================================== #
-# 手部 → 控制量（含边沿检测）
+# 手部 → 控制量（ID 跟踪架构，本轮整体重构）
 # =========================================================================== #
+class _HandTrack:
+    """一只被持续跟踪的手（跨帧身份 + 独立滤波）。"""
+    __slots__ = ("tid", "x", "y", "open", "area", "miss", "fx", "fy",
+                 "_of_x", "_of_y", "_rl_x", "_rl_y", "_seen")
+
+    _NEXT = [1]
+
+    def __init__(self, h: "HandState") -> None:
+        self.tid = _HandTrack._NEXT[0]
+        _HandTrack._NEXT[0] += 1
+        self.x, self.y, self.open, self.area = h.x, h.y, h.open, max(1e-6, h.area)
+        self.miss = 0
+        self._seen = 1
+        C = HandController.cfg_ref
+        self._of_x = OneEuroFilter(C.HAND_EURO_MIN_CUT, C.HAND_EURO_BETA,
+                                   C.HAND_EURO_DCUT, C.HAND_EURO_SPEED_DEAD)
+        self._of_y = OneEuroFilter(C.HAND_EURO_MIN_CUT, C.HAND_EURO_BETA,
+                                   C.HAND_EURO_DCUT, C.HAND_EURO_SPEED_DEAD)
+        self._rl_x = RateLimiter(C.HAND_MAX_STEP)
+        self._rl_y = RateLimiter(C.HAND_MAX_STEP)
+        self.fx, self.fy = self._of_x.filter(h.x, 1 / 30.0), self._of_y.filter(h.y, 1 / 30.0)
+
+    def update(self, h: "HandState", dt: float) -> None:
+        """喂入观测，更新滤波输出。x/y 更新为原始观测（关联用），fx/fy 为滤波值。"""
+        self.x, self.y = h.x, h.y
+        self.open = h.open
+        self.area = max(1e-6, h.area)
+        self.miss = 0
+        self._seen += 1
+        self.fx = self._of_x.filter(self._rl_x.filter(h.x, dt), dt)
+        self.fy = self._of_y.filter(self._rl_y.filter(h.y, dt), dt)
+
+
 class HandController:
     """
-    手部平滑 + 手势边沿检测。
+    手部控制的整体架构（重构后）：
 
-    · 主手选择：优先取"画面中面积最大的手"，避免远处置景（如脸旁边的墙）
-      被误判为主控手。
-    · pinch：open 连续低于 CLOSE 阈值并维持 2 帧 → 触发一次
-    · release：pinch 之后 open 升回 OPEN 阈值 → 触发一次
-    · grab_hold：当前是否处于"收拢"状态
+        检测流（每帧一串无身份的 HandState）
+            ↓ ① 数据关联：贪心最近邻把观测挂到已有 track 上
+            ↓ ② track 维护：丢失计数、过期回收
+            ↓ ③ 控制权：主手 = 一份**带迟滞的所有权**（挑战者要连续 N 帧
+                面积达 M 倍才夺权；闪烁冻结不衰减；真丢失才交还）
+            ↓ ④ 输出：主手的 One Euro 滤波坐标（快挥跟手、静止稳定）
+                + 张合度边沿（pinch / release）
+
+    为什么必须这么改（旧架构的病灶）：
+        旧实现每帧独立"选一只主手"。快速挥动时 21 点检测必然闪烁，
+        `HAND_LOST_AFTER=0.6s` 一到就清空主手记忆 → 下一次检测回来重新选
+        → 光标跳走。**挥得越快、跟得越错** —— 切水果这类快速挥动游戏
+        直接不可用，这就是用户看到的"完全对不上"。
+        头部那套 TRACKING/HOLD/LOST 的迟滞语义在这里同样成立，
+        只不过它从来没被搬到手上。
     """
 
+    cfg_ref = None      # _HandTrack 构造时需要 config；由 __init__ 注入
+
     def __init__(self, cfg) -> None:
+        HandController.cfg_ref = cfg
         self.cfg = cfg
         self.reset()
 
     def reset(self) -> None:
+        C = self.cfg
         self.sx = 0.5
         self.sy = 0.5
         self.sopen = 0.0
         self.seen = False
         self.lost_t = 99.0
+        # 手势边沿（语义与旧版一致，游戏代码无需改）
+        self.pinch = False
+        self.release = False
         self._closed_frames = 0
         self._was_closed = False
         self._pinch_fired = False
         self._armed = False
-        self.pinch = False
-        self.release = False
-        self._main_pos = None      # 上一帧主手的位置（主手连续性判据）
-        self._main_hand = None     # 当前选中的主手
+        # ID 跟踪状态
+        self._tracks: List[_HandTrack] = []
+        self._main: Optional[_HandTrack] = None     # 控制权持有者
+        self._chall: Optional[Tuple[_HandTrack, int]] = None
+        self._hold_t = 0.0                          # 主手连续未观测时长
+        self._debug: dict = {}
 
-    def _pick_main(self, hands: List[HandState]) -> HandState:
+    # ------------------------------------------------------------------ 关联
+    _ASSOC_DIST = 0.28      # 观测与 track 的常规关联半径（画面比例）
+    _ASSOC_HARD = 0.55      # 硬上限：超过这个距离绝不当成同一只手
+
+    def _associate(self, hands: List[HandState], dt: float) -> None:
         """
-        选主手：**跟随上一帧那只**，而不是每帧重新取 area 最大的。
+        贪心最近邻关联：把每帧观测挂到跨帧 track 上。
 
-        为什么不能每帧取最大：镜头里出现多只手时（另一只手、误检、背景里的手），
-        "哪只面积更大"会在几帧之间反复易手 —— 于是游戏里的光标就在几只手之间
-        来回瞬移。玩家看到的现象正是"轨迹跟我的手完全对不上"：
-        检测确实成功了，但**跟错了目标**。
-
-        连续性是更可靠的判据：同一只手在相邻帧里必然位于相近位置，
-        不可能一帧之间跳到画面另一头。只有在"上一帧那只确实消失"或
-        "出现面积悬殊得多的新手"（真的换了一只手）时才允许改选。
+        两档门限（血泪教训：只有一档会丢目标）：
+          · 常规档 0.28：正常情况，多候选时按此判"谁是谁"；
+          · 追赶档：唯一的候选离 track 较远（0.28~0.55）时**仍然关联** ——
+            快速挥动一步跨 0.3+ 是真实存在的，若当作"新手"另起 track，
+            主手就永远停在原地（上一版"轨迹对不上"的变体）。
+            只有当画面里**同时**出现多个候选、或距离超过硬上限时，
+            才放弃追赶 —— 那多半真的是另一只手。
         """
-        if len(hands) == 1:
-            return hands[0]
-        if self._main_pos is None:
-            return max(hands, key=lambda z: z.area)
-        px, py = self._main_pos
-        nearest = min(hands, key=lambda z: math.hypot(z.x - px, z.y - py))
-        biggest = max(hands, key=lambda z: z.area)
-        # 离上一帧太远 → 原来那只已经不在候选里（手移出画面/被遮挡）
-        if math.hypot(nearest.x - px, nearest.y - py) > 0.35:
-            return biggest
-        # 面积悬殊得多 → 确实是换了一只手在操作
-        if biggest.area > max(1e-6, nearest.area) * 2.2:
-            return biggest
-        return nearest
+        C = self.cfg
+        obs = [(h, i) for i, h in enumerate(hands)]
+        pairs: List[Tuple[float, _HandTrack, int]] = []
+        alone = len(hands) == 1
+        for tr in self._tracks:
+            for h, i in obs:
+                d = math.hypot(h.x - tr.x, h.y - tr.y)
+                if d <= self._ASSOC_DIST or (alone and d <= self._ASSOC_HARD):
+                    pairs.append((d, tr, i))
+        pairs.sort(key=lambda p: p[0])
+        used_t: set = set()
+        used_o: set = set()
+        for d, tr, i in pairs:
+            if id(tr) in used_t or i in used_o:
+                continue
+            used_t.add(id(tr))
+            used_o.add(i)
+            tr.update(hands[i], dt)
+        # 未关联上的观测 → 新 track（可能是新手，也可能是闪烁后回归的老手
+        # —— 由"谁先赢得控制权"决定，不在这里猜身份）
+        for h, i in obs:
+            if i not in used_o:
+                self._tracks.append(_HandTrack(h))
+        # 未观测到的 track：丢失计数 + 位置冻结（不外推 —— 手不像头有惯性可借）
+        for tr in self._tracks:
+            if id(tr) not in used_t:
+                tr.miss += 1
 
+    def _gc_tracks(self) -> None:
+        """回收长时间没有观测的 track。"""
+        C = self.cfg
+        keep = []
+        for tr in self._tracks:
+            if tr.miss > int(C.HAND_LOST_AFTER * 30):
+                if self._main is tr:
+                    self._main = None
+                continue
+            keep.append(tr)
+        self._tracks = keep
+
+    # ------------------------------------------------------------------ 控制权
+    def _update_owner(self) -> None:
+        """
+        主手 = 控制权（带迟滞）。
+
+        三条规则：
+          ① 没有现任 → 选取"观测最连续"的（面积只作平手判据）。
+          ② 有现任 → 现任享有优势；挑战者必须连续 HAND_TAKEOVER_FRAMES 帧
+             面积达 HAND_TAKEOVER_RATIO 倍才夺权。
+          ③ 现任连续 HAND_LOST_AFTER 没被观测 → 控制权交还（手真的离开了）。
+        """
+        C = self.cfg
+        live = [t for t in self._tracks if t.miss == 0]
+        stale_ok = [t for t in self._tracks if t.miss <= int(C.HAND_LOST_AFTER * 30)]
+
+        # ③ 现任彻底消失
+        if self._main is not None and self._main not in stale_ok:
+            self._main = None
+            self._chall = None
+
+        # ① 选取新任
+        if self._main is None:
+            if live:
+                # 观测最连续者优先（_seen 大 = 稳定出现），面积平手判据
+                self._main = max(live, key=lambda t: (t._seen, t.area))
+                self._chall = None
+            return
+
+        # ② 挑战者判定（只在现任也活着的时候比，闪烁期不夺权）
+        if live and self._main.miss == 0:
+            cand = max(live, key=lambda t: t.area)
+            if (cand is not self._main
+                    and cand.area > self._main.area * C.HAND_TAKEOVER_RATIO):
+                if self._chall is not None and self._chall[0] is cand:
+                    n = self._chall[1] + 1
+                else:
+                    n = 1
+                self._chall = (cand, n)
+                if n >= C.HAND_TAKEOVER_FRAMES:
+                    self._main = cand
+                    self._chall = None
+            else:
+                self._chall = None
+
+    # ------------------------------------------------------------------ 主循环
     def update(self, hands: List[HandState], dt: float) -> None:
         C = self.cfg
         self.pinch = False
         self.release = False
 
-        if not hands:
+        self._associate(hands, dt)
+        self._gc_tracks()
+        self._update_owner()
+
+        main = self._main
+        if main is None:
             self.lost_t += dt
             if self.lost_t > C.HAND_LOST_AFTER:
                 self.seen = False
-                # 手真的离开了：解除"可触发"状态。
-                # 否则重新捕捉到一只一直握着的手时，会在完全没做动作的情况下
-                # 立刻误触发一次捏合（边沿条件成立，但根本没有"张开→握拢"的转变）。
+                # 手真的离开了：把**边沿状态全部复位**。
+                # 只解除 _armed 是不够的（血泪教训）：一次没走完的捏合流程
+                # 留下的 _closed_frames/_was_closed/_pinch_fired 若不清掉，
+                # 重新捕获一只一直握着的手时会凭空补触发一次捏合 ——
+                # 玩家根本没做"张开→握拢"的动作。
                 self._armed = False
-                # 主手记忆一并作废：手离开过之后，画面里再出现的手
-                # 未必是刚才那只（可能换了一只手），继续跟随会跟错。
-                self._main_pos = None
-                self._main_hand = None
-            self._was_closed = False
-            self._closed_frames = 0
-            self._pinch_fired = False
+                self._was_closed = False
+                self._closed_frames = 0
+                self._pinch_fired = False
+                self.sopen = 0.0          # 张合度也归零：新手的第一个观测
+                                              # 必须从头建立，不吃旧平滑值
             return
 
+        # HOLD / LOST：与头部同一套迟滞语义。
+        # 闪烁期间（主手短暂没观测到）**冻结**输出 —— 绝不衰减：
+        # 衰减会让光标往中间滑，闪烁恢复又弹回，正是抖动的来源。
+        if main.miss > 0:
+            self._hold_t += dt
+            if self._hold_t <= C.HAND_HOLD_AFTER:
+                self.seen = True          # HOLD：保持上一帧输出不变
+                return
+            # 超过 HOLD 还没回来 → 按"手已离开"处理。
+            # 边沿状态一并复位（理由同 main is None 分支）：
+            # 一段没走完的捏合流程 + 之后重新出现的手 = 凭空触发。
+            # ⚠ _armed 也必须解：它守的是"先观察到张开，才允许捏合边沿"，
+            # 而丢失本身就是这个语义链的断裂。只清其他三个、留着 _armed，
+            # 重新捕获一只一直握着的手照样凭空触发（实测踩过）。
+            if self.seen:
+                self._armed = False
+                self._was_closed = False
+                self._closed_frames = 0
+                self._pinch_fired = False
+            self.seen = False
+            self.lost_t += dt
+            return
+        self._hold_t = 0.0
         self.lost_t = 0.0
-        h = self._pick_main(hands)
-        self._main_hand = h
-        self._main_pos = (h.x, h.y)
-        # 基于时间的平滑：帧率变化时跟随手感保持一致
+
+        # 正常输出：主手的滤波坐标（One Euro + 速率限制）
+        self.sx, self.sy = main.fx, main.fy
         k = 1.0 - math.exp(-dt / max(1e-3, C.HAND_TAU))
-        self.sx += k * (h.x - self.sx)
-        self.sy += k * (h.y - self.sy)
-        self.sopen += k * (h.open - self.sopen)
+        self.sopen += k * (main.open - self.sopen)
         self.seen = True
 
         if self.sopen > C.HAND_OPEN_THRESHOLD:
-            self._armed = True          # 观察到"张开"之后，才允许产生捏合边沿
+            self._armed = True
 
         closed = self.sopen < C.HAND_CLOSE_THRESHOLD
         if closed:
             self._closed_frames += 1
-            # 用独立的 _pinch_fired 记录"本次收拢是否已经触发过"。
-            # 之前用 _was_closed 判断，而它在前一帧就被置 True 了，
-            # 导致 `_closed_frames == 2 and not _was_closed` 永远为假 —— pin
-            # 一次都不会触发。
             if self._armed and self._closed_frames >= 2 and not self._pinch_fired:
                 self.pinch = True
                 self._pinch_fired = True
@@ -818,23 +964,38 @@ class HandController:
                 self._was_closed = False
             self._pinch_fired = False
 
+        self._debug = {
+            "tid": main.tid, "miss": main.miss, "hold": round(self._hold_t, 2),
+            "tracks": len(self._tracks),
+            "raw": (round(main.x, 3), round(main.y, 3)),
+        }
+
     @property
     def grab_hold(self) -> bool:
         return self._was_closed
 
-    def apply(self, inp: GameInput, hands: List[HandState]) -> GameInput:
-        inp.hands = hands
+    # ------------------------------------------------------------------ 应用
+    def apply(self, inp: GameInput, hands: List[HandState] = None) -> GameInput:
+        """
+        把主手状态写进 GameInput。
+
+        hands 参数保留兼容（旧签名），但主手选择已在 update 里完成，
+        这里**绝不再重选** —— 否则又回到"坐标跟 A、状态取 B"的错位。
+        """
+        inp.hands = hands or []
         if hands:
             hs = sorted(hands, key=lambda h: h.x)
             inp.hand_l = hs[0]
             inp.hand_r = hs[-1] if len(hs) > 1 else hs[0]
-            # 用 update 里选中的那只主手（带连续性），不要在这里重选一遍 ——
-            # 两处各选一次会出现"坐标跟 A 手、手指状态取 B 手"的错位。
-            main = self._main_hand or max(hands, key=lambda h: h.area)
-            inp.hx, inp.hy = self.sx, self.sy
-            inp.hand_open = self.sopen
-            inp.fingers = main.fingers
+            # 手指计数用现任主手（与坐标同源，避免错位）
+            if self._main is not None and self._main.miss == 0:
+                m = next((h for h in hands
+                          if math.hypot(h.x - self._main.x, h.y - self._main.y) < 0.05),
+                         None)
+                inp.fingers = m.fingers if m else 0
         inp.hand_found = self.seen
+        inp.hx, inp.hy = self.sx, self.sy
+        inp.hand_open = self.sopen
         inp.pinch = self.pinch
         inp.release = self.release
         inp.grab_hold = self.grab_hold

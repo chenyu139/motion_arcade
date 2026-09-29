@@ -695,6 +695,9 @@ class MotionTracker:
         self._face = None
         self._engine = None
         self._use_yunet = False
+        # 纯手部游戏把推理间隔提到每帧（apple 只跑手部请求仅 4.8ms）；
+        # 全身模式维持 VISION_EVERY（body+hand 共享推理 8.3ms，隔帧跑）。
+        # 注意 _base_interval 会随 set_vision_mode 切换而更新。
         self._vision_every = max(1, int(vision_every or C.VISION_EVERY))
         self._base_interval = self._vision_every
         self._vision_interval = self._base_interval
@@ -993,6 +996,10 @@ class MotionTracker:
         """
         self._vision_mode = mode
         self._miss_streak = 0
+        # 纯手部模式用更密的间隔（apple 只跑手部 4.8ms，每帧都跑得起）；
+        # 全身模式维持构造时的间隔（body+hand 共享推理 8.3ms，隔帧）。
+        base = C.HAND_VISION_EVERY if mode == "hand" else self._vision_every
+        self._base_interval = max(1, base)
         self._vision_interval = max(1, self._base_interval)
         want = {"off": (False, False), "hand": (False, True),
                 "body": (True, False), "full": (True, True)}.get(mode)
