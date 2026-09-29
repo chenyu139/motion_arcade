@@ -938,10 +938,25 @@ class MotionTracker:
 
     @staticmethod
     def _hand_state(hf) -> HandState:
-        """HandFrame（21 点）→ 兼容的 HandState。"""
+        """
+        HandFrame（21 点）→ 兼容的 HandState。
+
+        ⚠ area **必须**填。HandController 是靠 `max(hands, key=area)` 选主手的，
+        而这里原来一直没给它赋值 —— 于是每只手的 area 都是默认的 0.0，
+        评分全部相同，`max` 就固定返回**第一个**。
+        Apple Vision 返回多只手（或一真一误检）时的顺序并不稳定，
+        结果就是主手每帧在不同手之间跳 → 游戏里的光标轨迹完全对不上。
+        """
         c = hf.center
+        ok = [j for j in hf.joints.values() if getattr(j, "ok", False)]
+        if ok:
+            xs = [j.x for j in ok]
+            ys = [j.y for j in ok]
+            area = max(0.0, (max(xs) - min(xs))) * max(0.0, (max(ys) - min(ys)))
+        else:
+            area = max(1e-6, hf.palm_width * hf.palm_width)
         return HandState(found=True, x=c.x, y=c.y, open=hf.openness,
-                         fingers=hf.extended_count,
+                         fingers=hf.extended_count, area=area,
                          span=hf.palm_width, pose=hf)
 
     # ---------- 对外 ----------

@@ -733,6 +733,36 @@ class HandController:
         self._armed = False
         self.pinch = False
         self.release = False
+        self._main_pos = None      # 上一帧主手的位置（主手连续性判据）
+        self._main_hand = None     # 当前选中的主手
+
+    def _pick_main(self, hands: List[HandState]) -> HandState:
+        """
+        选主手：**跟随上一帧那只**，而不是每帧重新取 area 最大的。
+
+        为什么不能每帧取最大：镜头里出现多只手时（另一只手、误检、背景里的手），
+        "哪只面积更大"会在几帧之间反复易手 —— 于是游戏里的光标就在几只手之间
+        来回瞬移。玩家看到的现象正是"轨迹跟我的手完全对不上"：
+        检测确实成功了，但**跟错了目标**。
+
+        连续性是更可靠的判据：同一只手在相邻帧里必然位于相近位置，
+        不可能一帧之间跳到画面另一头。只有在"上一帧那只确实消失"或
+        "出现面积悬殊得多的新手"（真的换了一只手）时才允许改选。
+        """
+        if len(hands) == 1:
+            return hands[0]
+        if self._main_pos is None:
+            return max(hands, key=lambda z: z.area)
+        px, py = self._main_pos
+        nearest = min(hands, key=lambda z: math.hypot(z.x - px, z.y - py))
+        biggest = max(hands, key=lambda z: z.area)
+        # 离上一帧太远 → 原来那只已经不在候选里（手移出画面/被遮挡）
+        if math.hypot(nearest.x - px, nearest.y - py) > 0.35:
+            return biggest
+        # 面积悬殊得多 → 确实是换了一只手在操作
+        if biggest.area > max(1e-6, nearest.area) * 2.2:
+            return biggest
+        return nearest
 
     def update(self, hands: List[HandState], dt: float) -> None:
         C = self.cfg
@@ -747,13 +777,19 @@ class HandController:
                 # 否则重新捕捉到一只一直握着的手时，会在完全没做动作的情况下
                 # 立刻误触发一次捏合（边沿条件成立，但根本没有"张开→握拢"的转变）。
                 self._armed = False
+                # 主手记忆一并作废：手离开过之后，画面里再出现的手
+                # 未必是刚才那只（可能换了一只手），继续跟随会跟错。
+                self._main_pos = None
+                self._main_hand = None
             self._was_closed = False
             self._closed_frames = 0
             self._pinch_fired = False
             return
 
         self.lost_t = 0.0
-        h = max(hands, key=lambda z: z.area)
+        h = self._pick_main(hands)
+        self._main_hand = h
+        self._main_pos = (h.x, h.y)
         # 基于时间的平滑：帧率变化时跟随手感保持一致
         k = 1.0 - math.exp(-dt / max(1e-3, C.HAND_TAU))
         self.sx += k * (h.x - self.sx)
@@ -792,7 +828,9 @@ class HandController:
             hs = sorted(hands, key=lambda h: h.x)
             inp.hand_l = hs[0]
             inp.hand_r = hs[-1] if len(hs) > 1 else hs[0]
-            main = max(hands, key=lambda h: h.area)
+            # 用 update 里选中的那只主手（带连续性），不要在这里重选一遍 ——
+            # 两处各选一次会出现"坐标跟 A 手、手指状态取 B 手"的错位。
+            main = self._main_hand or max(hands, key=lambda h: h.area)
             inp.hx, inp.hy = self.sx, self.sy
             inp.hand_open = self.sopen
             inp.fingers = main.fingers
