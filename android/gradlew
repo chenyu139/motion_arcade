@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# 本项目的 Gradle 启动器（薄封装，不是标准的 wrapper jar 版）。
+#
+# 为什么不是标准 gradle-wrapper.jar：
+#   标准 wrapper 会用 **Java** 去 services.gradle.org 下载 Gradle 发行版，
+#   而本机网络会掐断 Java 的 TLS 握手（curl 能过、Java 不行），下载必失败。
+#   所以这里改成：优先用本机已装的 Gradle 8.13，缺失时用 **curl** 下载并解压。
+#
+# 为什么必须是 Gradle 8.x：
+#   AGP 8.13.2 只兼容 Gradle 8.x；系统 brew 装的 gradle 是 9.x，直接跑会报错。
+#
+# 用法： ./gradlew :app:assembleDebug
+#
+set -euo pipefail
+
+REQUIRED_MAJOR=8
+DEFAULT_HOME="$HOME/gradle-dist/gradle-8.13"
+DIST_URL="https://services.gradle.org/distributions/gradle-8.13-bin.zip"
+
+version_of() { "$1/bin/gradle" --version 2>/dev/null | awk '/^Gradle /{print $2; exit}'; }
+
+usable() {   # usable <gradle-home>  → 是否版本对得上
+    local v
+    v="$(version_of "$1" || true)"
+    [ -n "$v" ] || return 1
+    [ "${v%%.*}" = "$REQUIRED_MAJOR" ]
+}
+
+# 1) 显式指定
+if [ -n "${GRADLE_HOME:-}" ] && usable "$GRADLE_HOME"; then
+    exec "$GRADLE_HOME/bin/gradle" "$@"
+fi
+
+# 2) 本机已装
+if usable "$DEFAULT_HOME"; then
+    exec "$DEFAULT_HOME/bin/gradle" "$@"
+fi
+
+# 3) 系统 gradle（版本对就用，不对就继续往下走）
+if command -v gradle >/dev/null 2>&1; then
+    sys_v="$(gradle --version 2>/dev/null | awk '/^Gradle /{print $2; exit}')"
+    if [ "${sys_v%%.*}" = "$REQUIRED_MAJOR" ]; then
+        exec gradle "$@"
+    fi
+fi
+
+# 4) 都没有 → 用 curl 下载（curl 能正常访问外网，Java 不行）
+echo "==> 未找到 Gradle ${REQUIRED_MAJOR}.x，下载到 $DEFAULT_HOME"
+mkdir -p "$(dirname "$DEFAULT_HOME")"
+tmp="$(mktemp -d)"
+curl -fsSL --retry 2 --max-time 300 "$DIST_URL" -o "$tmp/gradle.zip"
+unzip -q -o "$tmp/gradle.zip" -d "$(dirname "$DEFAULT_HOME")"
+rm -rf "$tmp"
+
+if ! usable "$DEFAULT_HOME"; then
+    echo "错误：Gradle ${REQUIRED_MAJOR}.x 安装失败，请手动安装后重试" >&2
+    exit 1
+fi
+
+exec "$DEFAULT_HOME/bin/gradle" "$@"

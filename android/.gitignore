@@ -1,0 +1,22 @@
+# Gradle / 构建产物
+.gradle/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 运行期资产：由 scripts/prepare_assets.sh 生成，不入库（模型 17MB + 图 16MB）
+app/src/main/assets/models/
+app/src/main/assets/sprites/
+app/src/main/assets/bg/
+
+# 本机 SDK 路径（每人不同，由 Android Studio 自动生成）
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# 签名（绝不入库）
+*.jks
+*.keystore

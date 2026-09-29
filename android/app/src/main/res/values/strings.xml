@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Motion Arcade</string>
+    <string name="perm_camera_rationale">体感游戏需要摄像头来识别你的头部与手部动作</string>
+</resources>
