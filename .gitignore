@@ -37,3 +37,4 @@ run_args.txt
 screenshots/
 # MediaPipe 的三个 .task 模型（共 19MB）不在本机用到，需要时按 README 下载
 assets/models/*.task
+generated-images/
