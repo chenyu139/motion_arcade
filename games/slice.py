@@ -18,6 +18,8 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -33,6 +35,12 @@ FRUITS = [
     ("枇杷", (246, 190, 76), 44, 100),
     ("花椒", (108, 74, 52), 50, -1),
 ]
+
+# 每种水果对应的 AI 生成精灵（缺图时回退到程序绘制）
+_FRUIT_SPRITE = {
+    "橙子": "fruit", "猕猴桃": "kiwi", "蜜桃": "peach",
+    "西瓜": "watermelon", "枇杷": "loquat", "花椒": "pepper",
+}
 
 
 @register
@@ -76,7 +84,7 @@ class SliceGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (34, 40, 56), (58, 68, 92), (30, 34, 48)), (0, 0))
+        SCN.sky_or(s, "sky_teahouse", W, H, (34, 40, 56), (58, 68, 92), (30, 34, 48))
         # 案板
         s.blit(A.shade_panel(W, 180, (128, 92, 62), 0, 1.1, 0.7), (0, FLOOR))
         rng = random.Random(11)
@@ -231,6 +239,13 @@ class SliceGame(BaseGame):
     def _draw_fruit(self, surf, it):
         name, col, size, val = it["spec"]
         x, y = it["x"], it["y"]
+        spr = _FRUIT_SPRITE.get(name)
+        if spr and SP.draw(surf, spr, x, y, height=size * 1.15, anchor="center"):
+            if val < 0:
+                U.text(surf, "✕", (x, y - size * 1.9), 30, (255, 150, 130),
+                       center=True, bold=True)
+            return
+        # 回退：程序绘制
         r = size * 0.5
         surf.blit(A.shade_ball(r, col, ss=2), (int(x - r), int(y - r)))
         if name == "西瓜":

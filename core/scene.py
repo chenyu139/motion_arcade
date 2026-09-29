@@ -26,6 +26,7 @@ core/scene.py
 from __future__ import annotations
 
 import math
+import os
 import random
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -39,11 +40,61 @@ Color = Tuple[int, int, int]
 
 
 # =========================================================================== #
-# 场景构件
+# 绘制好的天空背景（assets/bg/sky_*.png，AI 生成原创）
 # =========================================================================== #
+# 纯渐变天空是"代码感"最重的一层。这里提供一张真正画出来的天空作为可选底图：
+# 有云、有大气层次、有光照方向 —— 各游戏的远景/地面照旧画在它上面，
+# 深度合成（depth_pass）再统一叠加，风格就能保持一致。
+_BG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "assets", "bg")
+_SKY_CACHE: Dict[str, Optional[pygame.Surface]] = {}
+
+
+def sky_img(w: int, h: int, name: str, tile_x: bool = False) -> Optional[pygame.Surface]:
+    """
+    取一张绘制好的天空背景图，缩放到 (w, h)。
+
+    tile_x=True 时水平平铺（超长关卡背景用，比如横版跑酷的 6000px 长图）。
+    素材缺失时返回 None —— 调用方据此回退到原来的渐变天空，
+    与 `core/sprites.py` 的"缺图不崩"是同一条设计原则。
+    """
+    key = (name, w, h, tile_x)
+    got = _SKY_CACHE.get(key)
+    if got is not None or (key in _SKY_CACHE and got is None):
+        return got
+    path = os.path.join(_BG_DIR, f"{name}.png")
+    if not os.path.exists(path):
+        _SKY_CACHE[key] = None
+        return None
+    try:
+        raw = pygame.image.load(path).convert()
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[scene] 载入天空 {name} 失败：{e}")
+        _SKY_CACHE[key] = None
+        return None
+    base = pygame.transform.smoothscale(raw, (1920, h))
+    if tile_x:
+        s = pygame.Surface((w, h))
+        for x in range(0, w, base.get_width()):
+            s.blit(base, (x, 0))
+    else:
+        s = pygame.transform.smoothscale(raw, (w, h)) if (w, h) != (1920, h) else base
+    if len(_SKY_CACHE) > 24:
+        _SKY_CACHE.clear()
+    _SKY_CACHE[key] = s
+    return s
+
+
 def sky(w: int, h: int, top: Color, mid: Color, bottom: Color) -> pygame.Surface:
     """三段渐变天空。比两段渐变多一层中间色，天顶到地平线的过渡才不生硬。"""
     return U.vgrad3(w, h, top, mid, bottom)
+
+
+def sky_or(surf: pygame.Surface, name: str, w: int, h: int,
+           top: Color, mid: Color, bottom: Color, tile_x: bool = False) -> None:
+    """优先贴绘制好的天空图，缺图回退到三段渐变。大多数游戏一行搞定。"""
+    img = sky_img(w, h, name, tile_x=tile_x)
+    surf.blit(img, (0, 0)) if img is not None else surf.blit(sky(w, h, top, mid, bottom), (0, 0))
 
 
 def sun(surf: pygame.Surface, cx: float, cy: float, r: float,

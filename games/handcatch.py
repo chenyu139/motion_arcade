@@ -20,6 +20,7 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -219,6 +220,10 @@ class HandCatchGame(BaseGame):
     @staticmethod
     def _item_sprite(spec) -> pygame.Surface:
         name, col, size, vy, val = spec
+        if name == "青铜面具":
+            sp = SP.get("sanxingdui", height=size * 2.4)
+            if sp is not None:
+                return sp
 
         def _d(s):
             r = size * 2

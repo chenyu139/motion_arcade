@@ -20,6 +20,7 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -124,7 +125,7 @@ class PuzzleGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (28, 20, 30), (54, 34, 48), (24, 16, 24)), (0, 0))
+        SCN.sky_or(s, "sky_teahouse", W, H, (28, 20, 30), (54, 34, 48), (24, 16, 24))
         rng = random.Random(7)
         for _ in range(70):
             x, y = rng.uniform(0, W), rng.uniform(0, H)

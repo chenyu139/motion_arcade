@@ -19,6 +19,7 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -217,8 +218,10 @@ class HoopGame(BaseGame):
         if self.phase in ("aim", "fly"):
             self._draw_shooter(surf)
         if self.ball is not None:
-            A.draw_ball(surf, self.ball["x"], self.ball["y"], 34, "basketball",
-                        rot=self.ball["rot"], shadow=0.6, ground_y=FLOOR)
+            if not SP.draw(surf, "basketball", self.ball["x"], self.ball["y"],
+                           height=68, rot=math.degrees(self.ball["rot"]), shadow=0.6):
+                A.draw_ball(surf, self.ball["x"], self.ball["y"], 34, "basketball",
+                            rot=self.ball["rot"], shadow=0.6, ground_y=FLOOR)
         if self.phase == "aim":
             self._draw_aim(surf)
         for i, h in enumerate(self.history):

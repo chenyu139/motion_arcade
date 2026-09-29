@@ -21,6 +21,8 @@ import pygame
 from core import art as A
 from core import sichuan as SC
 from core import theme as U
+from core import scene as SCN
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -76,7 +78,7 @@ class FishingGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238)), (0, 0))
+        SCN.sky_or(s, "sky_day", W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238))
         rng = random.Random(5)
         # 都江堰 / 乐山大佛 / 三星堆 —— 岷江两岸的四川地标
         # 注意这里必须画到局部变量 s 上：_make_bg 还没返回，self._bg 尚不存在
@@ -231,6 +233,13 @@ class FishingGame(BaseGame):
         d = 1 if f["vx"] >= 0 else -1
         s = size / 40.0
         k = 1.0 - f["sunk"] * 0.7
+        if SP.draw(surf, "fish", x, y, height=size * 1.5 * k, anchor="center",
+                   flip=(d < 0)):
+            if val < 0:
+                U.text(surf, "✕", (x, y - size * 1.6), 28, (255, 140, 120),
+                       center=True, bold=True)
+            return
+        # 回退：程序绘制
         # 身体
         U.aa_ellipse(surf, (int(x - size * 1.25), int(y - size * 0.56 * k),
                             int(size * 2.5), int(size * 1.12 * k)), col, 0, ss=2)

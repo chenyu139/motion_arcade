@@ -20,6 +20,8 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -73,7 +75,7 @@ class ShootGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (58, 82, 106), (108, 146, 168), (60, 88, 72)), (0, 0))
+        SCN.sky_or(s, "sky_day", W, H, (58, 82, 106), (108, 146, 168), (60, 88, 72))
         rng = random.Random(13)
         # 远山
         for _ in range(10):

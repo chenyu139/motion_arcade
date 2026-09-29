@@ -20,6 +20,7 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -87,14 +88,7 @@ class DrumGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (34, 16, 20), (66, 26, 30), (28, 14, 18)), (0, 0))
-        # 舞台幕布
-        for i in range(20):
-            x = i * (W / 19.0)
-            col = U.shade((138, 34, 40), 0.58 + 0.28 * math.sin(i * 1.4))
-            U.aa_poly(s, [(x, self.TOP), (x + W / 19.0, self.TOP + 12),
-                          (x + W / 19.0 * 0.92, 620), (x + W / 19.0 * 0.08, 610)],
-                      col, 0, ss=2)
+        SCN.sky_or(s, "sky_stage", W, H, (34, 16, 20), (66, 26, 30), (28, 14, 18))
         # 顶部灯笼
         for i in range(7):
             x = W * (i + 0.5) / 7.0

@@ -21,6 +21,7 @@ from core import art as A
 from core import sichuan as SC
 from core import config as C
 from core import theme as U
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -305,8 +306,10 @@ class TennisGame(BaseGame):
         self._draw_opponent(surf)
         if self.ball is not None:
             b = self.ball
-            A.draw_ball(surf, b["x"], b["y"], 20, "tennis", rot=b["rot"],
-                        shadow=0.7, ground_y=GROUND - 4)
+            if not SP.draw(surf, "tennis_ball", b["x"], b["y"], height=40,
+                           rot=math.degrees(b["rot"]), shadow=0.7):
+                A.draw_ball(surf, b["x"], b["y"], 20, "tennis", rot=b["rot"],
+                            shadow=0.7, ground_y=GROUND - 4)
         for m in self.hit_marks:
             k = m["t"] / 0.5
             U.text(surf, m["txt"], (m["x"], m["y"] - 30 - (1 - k) * 40), int(26 + 8 * k),

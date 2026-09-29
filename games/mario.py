@@ -18,6 +18,7 @@ import pygame
 
 from core import art as A
 from core import scene as SCN
+from core import sprites as SP
 from core import sichuan as SC
 from core import config as C
 from core import theme as U
@@ -150,7 +151,9 @@ class MarioGame(BaseGame):
         self.bricks_broken = set()
         self.flag = 0.0
         self.win_t = 0.0
-        self._sky = SCN.sky(C.DESIGN_W, C.DESIGN_H, SKY_TOP, (120, 184, 236), SKY_BOT)
+        self._sky = (SCN.sky_img(LEVEL_W + 240, C.DESIGN_H, "sky_day", tile_x=True)
+                     or SCN.sky(C.DESIGN_W, C.DESIGN_H, SKY_TOP,
+                                (120, 184, 236), SKY_BOT))
         # 云的数量与尺寸都要克制：26 朵 × 最大 1.35 倍会在天上连成一片"云墙"，
         # 反而把天空糊死。14 朵、0.45~0.95 倍才是有留白的云。
         self._clouds = [_Cloud(random.uniform(200, LEVEL_W), random.uniform(110, 430),
@@ -543,7 +546,10 @@ class MarioGame(BaseGame):
         U.aa_ellipse(surf, (int(x - 20), int(y + 26), int(w + 40), 16), (206, 218, 240), 0, ss=2)
 
     def _draw_coin(self, surf, x, y, ph):
-        """金币用 12 帧预烘焙的旋转动画，每个金币只需 1 次 blit。"""
+        """金币优先用 AI 生成的熊猫金币精灵，带回退的程序动画。"""
+        h = 46 * (1.0 + 0.14 * abs(math.cos(ph)))
+        if SP.draw(surf, "coin", x, y, height=h, anchor="center"):
+            return
         idx = int(ph / math.tau * 12) % 12
         f = self._coin_frames[idx]
         surf.blit(f, (int(x - f.get_width() / 2), int(y - f.get_height() / 2)))
@@ -575,6 +581,10 @@ class MarioGame(BaseGame):
     def _draw_goomba(self, surf, x, ground, phase, dirn):
         y = ground - 58
         bob = math.sin(phase) * 3
+        if SP.draw(surf, "enemy", x, y + bob + 58, height=96, anchor="bottom",
+                   flip=(dirn < 0)):
+            return
+        # 回退：程序绘制的板栗仔
         body = A.shade_ball(29, (168, 116, 74), ss=3)
         surf.blit(body, (int(x - 29), int(y + bob)))
         surf.blit(A.shade_ball(20, (206, 158, 108), ss=3), (int(x - 46), int(y + 4 + bob * 2)))

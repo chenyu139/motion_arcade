@@ -21,6 +21,7 @@ import pygame
 from core import art as A
 from core import sprites as SP
 from core import theme as U
+from core import scene as SCN
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -79,14 +80,7 @@ class MaskGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (26, 12, 22), (58, 22, 34), (30, 14, 24)), (0, 0))
-        # 舞台帷幕
-        for i in range(16):
-            x = i * (W / 15.0)
-            w = W / 15.0
-            col = U.shade((128, 30, 44), 0.62 + 0.30 * math.sin(i * 1.7))
-            U.aa_poly(s, [(x, 200), (x + w, 220), (x + w * 0.9, 420), (x + w * 0.1, 410)],
-                      col, 0, ss=2)
+        SCN.sky_or(s, "sky_stage", W, H, (26, 12, 22), (58, 22, 34), (30, 14, 24))
         # 顶部横批
         s.blit(A.shade_panel(W, 120, (72, 22, 30), 0, 1.1, 0.7), (0, 92))
         # 地面光

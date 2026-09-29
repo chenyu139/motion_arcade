@@ -22,6 +22,7 @@ from core import art as A
 from core import sichuan as SC
 from core import config as C
 from core import theme as U
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -302,8 +303,11 @@ class FootballGame(BaseGame):
         if self.ball is not None:
             k = U.clamp(self.ball["k"], 0.0, 1.0)
             r = U.lerp(30, 15, k)
-            A.draw_ball(surf, self.ball["x"], self.ball["y"], r, "football",
-                        rot=self.ball["spin"] * k * 3)
+            if not SP.draw(surf, "football", self.ball["x"], self.ball["y"],
+                           height=r * 2, rot=math.degrees(self.ball["spin"] * k * 3),
+                           shadow=0.35):
+                A.draw_ball(surf, self.ball["x"], self.ball["y"], r, "football",
+                            rot=self.ball["spin"] * k * 3)
         self._draw_scoreboard(surf)
         self.particles.draw(surf)
         if self.flash_goal > 0:

@@ -20,6 +20,8 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -70,7 +72,7 @@ class DinoGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (44, 24, 14), (128, 74, 30), (206, 148, 66)), (0, 0))
+        SCN.sky_or(s, "sky_dusk", W, H, (44, 24, 14), (128, 74, 30), (206, 148, 66))
         # 巨大的太阳轮（背景）
         cx, cy = W * 0.72, self.TOP + 300
         for i in range(7):
@@ -93,6 +95,10 @@ class DinoGame(BaseGame):
         return s
 
     def _make_bird(self) -> pygame.Surface:
+        # 优先用 AI 生成的太阳神鸟精灵（带回退的程序绘制）
+        sp = SP.get("sunbird", height=140)
+        if sp is not None:
+            return sp
         W, H = 208, 190
 
         def _d(s):

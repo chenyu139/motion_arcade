@@ -21,6 +21,7 @@ import pygame
 from core import art as A
 from core import sprites as SP
 from core import theme as U
+from core import scene as SCN
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -82,7 +83,7 @@ class LanternGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (18, 10, 26), (44, 20, 42), (22, 12, 28)), (0, 0))
+        SCN.sky_or(s, "sky_night", W, H, (18, 10, 26), (44, 20, 42), (22, 12, 28))
         rng = random.Random(6)
         # 夜空中的点点花灯（背景装饰）
         for _ in range(90):

@@ -12,6 +12,7 @@ games/balloon.py
 from __future__ import annotations
 
 import math
+import colorsys
 import random
 from typing import List
 
@@ -19,6 +20,8 @@ import pygame
 
 from core import art as A
 from core import theme as U
+from core import scene as SCN
+from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -72,7 +75,7 @@ class BalloonGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (52, 40, 74), (96, 76, 118), (54, 44, 72)), (0, 0))
+        SCN.sky_or(s, "sky_dusk", W, H, (52, 40, 74), (96, 76, 118), (54, 44, 72))
         # 竹影
         rng = random.Random(6)
         for _ in range(26):
@@ -205,20 +208,26 @@ class BalloonGame(BaseGame):
         pygame.draw.lines(surf, (222, 226, 236), False,
                           [(x, y + r), (x + sway * 0.4, y + r + 34),
                            (x - sway * 0.4, y + r + 68), (x + sway * 0.3, y + r + 100)], 3)
-        # 球体
-        U.aa_ellipse(surf, (int(x - r * 0.86), int(y - r), int(r * 1.72), int(r * 2.0)),
-                     b["c"], 0, ss=2)
-        U.aa_ellipse(surf, (int(x - r * 0.60), int(y - r * 0.84), int(r * 0.62), int(r * 0.9)),
-                     U.shade(b["c"], 1.30), 0, ss=2)
-        U.aa_ellipse(surf, (int(x - r * 0.30), int(y + r * 0.52), int(r * 0.7), int(r * 0.46)),
-                     (0, 0, 0, 40), 0, ss=2)
-        # 熊猫脸
-        for sgn in (-1, 1):
-            U.aa_circle(surf, (x + sgn * r * 0.52, y - r * 0.52), r * 0.26,
-                        U.shade(b["c"], 0.42), 0, ss=2)
-            U.aa_circle(surf, (x + sgn * r * 0.26, y - r * 0.06), r * 0.20, (250, 250, 252), 0, ss=2)
-            U.aa_circle(surf, (x + sgn * r * 0.30, y - r * 0.06), r * 0.10, (36, 34, 40), 0, ss=2)
-        U.aa_circle(surf, (x, y + r * 0.24), r * 0.13, (40, 38, 44), 0, ss=2)
+        # 气球主体：优先用 AI 生成的红气球精灵，按配色做色相旋转派生
+        rr, gg, bb = b["c"]
+        h = colorsys.rgb_to_hsv(rr / 255.0, gg / 255.0, bb / 255.0)[0] * 360.0
+        sp = SP.hued("balloon", height=r * 2.2, deg=h)
+        if sp is not None:
+            surf.blit(sp, (int(x - sp.get_width() / 2), int(y - sp.get_height() / 2)))
+        else:
+            # 回退：程序绘制
+            U.aa_ellipse(surf, (int(x - r * 0.86), int(y - r), int(r * 1.72), int(r * 2.0)),
+                         b["c"], 0, ss=2)
+            U.aa_ellipse(surf, (int(x - r * 0.60), int(y - r * 0.84), int(r * 0.62), int(r * 0.9)),
+                         U.shade(b["c"], 1.30), 0, ss=2)
+            U.aa_ellipse(surf, (int(x - r * 0.30), int(y + r * 0.52), int(r * 0.7), int(r * 0.46)),
+                         (0, 0, 0, 40), 0, ss=2)
+            for sgn in (-1, 1):
+                U.aa_circle(surf, (x + sgn * r * 0.52, y - r * 0.52), r * 0.26,
+                            U.shade(b["c"], 0.42), 0, ss=2)
+                U.aa_circle(surf, (x + sgn * r * 0.26, y - r * 0.06), r * 0.20, (250, 250, 252), 0, ss=2)
+                U.aa_circle(surf, (x + sgn * r * 0.30, y - r * 0.06), r * 0.10, (36, 34, 40), 0, ss=2)
+            U.aa_circle(surf, (x, y + r * 0.24), r * 0.13, (40, 38, 44), 0, ss=2)
         if b["hit"] > 0.2:
             surf.blit(U.glow_surface(int(r * 2.4), (255, 250, 220), int(70 * b["hit"]), 7),
                       (int(x - r * 2.4), int(y - r * 2.4)))
