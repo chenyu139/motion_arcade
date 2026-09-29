@@ -153,6 +153,36 @@ class Shell:
             self.start_game(start_game)
 
     # ------------------------------------------------------------------ 显示
+    def _available_window_size(self) -> Tuple[int, int]:
+        """
+        窗口模式下按屏幕可用空间挑一个尺寸，保证不会超出屏幕。
+
+        为什么必须做这件事：设计坐标系固定 1920×1080（见 config 顶部），
+        在 1366×768、1440×900 这类小屏上直接开一个 1920×1080 的窗口会
+        **顶出屏幕外** —— 底部提示条和左下角摄像头预览直接看不见。
+
+        为什么不去改设计分辨率：所有游戏都用 1920×1080 的绝对坐标
+        （网球场左右边界、攀岩抓手高度、HUD 高度都写死在其中）。
+        把设计改小意味着 20 款游戏的布局要逐一重排，收益远小于风险。
+        正确做法是**保持等比缩放**：绘制仍是 1920×1080，由 GPU（SCALED）
+        缩放到实际窗口 —— 这就是行业标准做法，也是最稳的一种。
+        """
+        try:
+            info = pygame.display.Info()
+            sw, sh = int(info.current_w), int(info.current_h)
+        except Exception:                                        # noqa: BLE001
+            return (C.DESIGN_W, C.DESIGN_H)
+        if sw <= 0 or sh <= 0:
+            return (C.DESIGN_W, C.DESIGN_H)
+        # 留出任务栏 / 标题栏的余量（这两个是窗口系统占的，拿不到精确值，估够就行）
+        avail_w, avail_h = int(sw * 0.92), int(sh * 0.86)
+        ar = C.DESIGN_W / float(C.DESIGN_H)
+        w = min(avail_w, int(avail_h * ar))
+        h = int(round(w / ar))
+        if w >= C.DESIGN_W and h >= C.DESIGN_H:
+            return (C.DESIGN_W, C.DESIGN_H)          # 屏幕够大，用原生设计尺寸
+        return (max(640, w), max(360, h))            # 下限保护，免得缩到看不清
+
     def _setup_display(self, windowed: bool) -> Tuple[pygame.Surface, str]:
         """
         按优先级尝试显示模式，任何一个成功就用它。
@@ -161,6 +191,9 @@ class Shell:
         硬件缩放到屏幕，而不是 CPU 逐帧 smoothscale，代价几乎为零。
         注意 `pygame.FULLSCREEN_DESKTOP` 在部分 pygame 构建里并不存在，
         所以这里不用它，改用 SCALED + FULLSCREEN。
+
+        **绘制表面始终是 1920×1080**，窗口的实际尺寸则是按屏幕自适应后的
+         （见 _available_window_size）：比例永远是 16:9，不会拉伸也不会切边。
         """
         size = (C.DESIGN_W, C.DESIGN_H)
         tries = [] if windowed else [
@@ -168,10 +201,14 @@ class Shell:
             (pygame.FULLSCREEN | pygame.SCALED, 0, "全屏（GPU 缩放）"),
             (pygame.FULLSCREEN | pygame.DOUBLEBUF, 0, "全屏（无缩放）"),
         ]
+        if not tries:                       # 窗口模式：先按屏幕挑一个装得下的尺寸
+            size = self._available_window_size()
+            print(f"[shell] 窗口模式：自适应 {size[0]}×{size[1]}（绘制仍为 "
+                  f"{C.DESIGN_W}×{C.DESIGN_H}，GPU 等比缩放）")
         tries += [
-            (pygame.SCALED | pygame.DOUBLEBUF, 1, "窗口 1920×1080（GPU 缩放）"),
-            (pygame.SCALED, 0, "窗口 1920×1080（无垂直同步）"),
-            (pygame.DOUBLEBUF, 0, "窗口 1920×1080（无缩放）"),
+            (pygame.SCALED | pygame.DOUBLEBUF, 1, "窗口（GPU 缩放 + 垂直同步）"),
+            (pygame.SCALED, 0, "窗口（GPU 缩放）"),
+            (pygame.DOUBLEBUF, 0, "窗口（无缩放）"),
             (0, 0, "窗口（最简）"),
         ]
         last = None
@@ -562,6 +599,10 @@ class Shell:
             n = len(self._hands)
             mode = "头部已锁定" + (f" · 手 {n}" if n else "")
             mcol, micon = UI.ACCENT, "check"
+            # 仍在识别，但质量不够好时改成警示色：让玩家自己就知道
+            # "现在不是游戏卡了，是我坐得太远/没转正"，而不是去怀疑识别不准。
+            if getattr(self.head_ctl, "quality", "good") not in ("good", ""):
+                mcol = UI.WARN
         elif state == "hold":
             mode, mcol, micon = "短暂丢帧 · 输入冻结", UI.WARN, "clock"
         else:
@@ -1070,6 +1111,31 @@ class Shell:
                    (255, 234, 230), center=True)
             U.text(self.screen, f"已丢失 {self.lost_t:4.1f} 秒", (cx, cy + 70), 26,
                    (255, 212, 202), center=True)
+            return
+        self._draw_quality_alert()
+
+    # ------------------------------------------------------------------ 质量
+    def _draw_quality_alert(self) -> None:
+        """
+        "还能玩，但不够好"时的提示 —— 坐太远 / 置信度低 / 侧转过大。
+
+        它与上面的丢失遮罩是**两种严重程度**，表达方式必须不同：
+            · 丢失    → 全屏红色遮罩 + 暂停（确实没法玩了）
+            · 质量差  → 角落一枚温和胶囊 + 一句**能立刻照做**的建议
+        后者如果也做成遮罩，用户会一直被挡着，可他其实还在正常操作。
+
+        文案统一由 config.QUALITY_TIPS 提供：口径改一处即可，
+        而且原则是给动作（"请靠近摄像头一些"），不是给状态（"识别不佳"）。
+        """
+        quality = getattr(self.head_ctl, "quality", "good")
+        if quality in ("good", "lost", ""):
+            return
+        tip = C.QUALITY_TIPS.get(quality, "")
+        if not tip:
+            return
+        col = UI.WARN if quality in ("far", "angle") else UI.DANGER
+        UI.pill(self.screen, (C.DESIGN_W // 2, C.HUD_H + 34), tip, col,
+                icon="target", size=UI.T_XS, height=54)
 
     def _draw_toast(self) -> None:
         if self.toast_t <= 0 or not self.toast:

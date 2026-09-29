@@ -205,8 +205,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="生成素材抠底")
     ap.add_argument("names", nargs="*", help="只处理这些素材（默认全部）")
     ap.add_argument("--tol", type=float, default=34.0, help="背景色容差")
-    ap.add_argument("--max", type=int, default=600,
-                    help="输出最长边上限（游戏里最大用到 ~400px，留 1.5 倍余量）")
+    ap.add_argument("--max", type=int, default=1024,
+                    help="输出最长边上限。原始生成图是 1024²，取 1024 即满分辨率；"
+                         "早期这里写的是 600，导致 12 张素材被平白降采样 "
+                         "（游戏里实际最大用到 ~400px，1024 有余量且缩放后更清晰）")
     ap.add_argument("--sheet", action="store_true", help="生成检查图")
     ap.add_argument("--sheet-out", default="/tmp/matte_sheet.png")
     args = ap.parse_args()

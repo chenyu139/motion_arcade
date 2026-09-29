@@ -21,6 +21,8 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from .filters import OneEuroFilter, RateLimiter, lowpass_towards
+
 
 # =========================================================================== #
 @dataclass
@@ -40,6 +42,7 @@ class FaceState:
     landmarks: Optional[List[Tuple[float, float]]] = None
     nose: Optional[Tuple[float, float]] = None
     backend: str = "-"
+    score: float = 1.0         # 检测器自身的置信度 0~1（只有部分后端会给）
 
 
 @dataclass
@@ -99,6 +102,11 @@ class GameInput:
     jump: bool = False
     mouth: float = 0.0
     found: bool = False
+
+    # ── 识别质量（供 UI 提示与降级；普通游戏逻辑不必关心）──────────────
+    confidence: float = 1.0   # 检测器置信度 0~1
+    quality: str = "good"     # good / far / poor / angle / lost
+    hint: str = ""            # 给用户看的具体建议文案（已按 quality 取好）
 
     hand_found: bool = False
     hx: float = 0.5
@@ -246,6 +254,7 @@ class HeadController:
         self.reset()
 
     def reset(self) -> None:
+        C = self.cfg
         # 校准采样：(cx, cy, w, h, yaw, pitch, pose_ok)
         self._samples: List[Tuple[float, ...]] = []
         self.neutral: Optional[Tuple[float, float]] = None   # 兼容：仅 (cx, cy)
@@ -261,6 +270,10 @@ class HeadController:
         self.pitch = 0.0
         self.found = False
         self.tracking = False          # 迟滞后的"可用"状态（见 update）
+        self.quality = "good"          # 识别质量分级（good/far/poor/angle/lost）
+        self.confidence = 1.0          # 当前 detector 置信度（0~1）
+        self._q_raw = "good"           # 逐帧原始判定（未经迟滞）
+        self._q_t = 0.0                # 判定已持续多久（迟滞用）
         self.lost_t = 99.0             # 连续丢检时长
         self.calibrating = True
         self.progress = 0.0
@@ -269,7 +282,17 @@ class HeadController:
         self._prev_w = 0.0
         self._odd_t = 0.0              # "位移与尺度不自洽"已持续的时长
         # ---- 抗抖动状态 ----
-        self._yaw_lp = 0.0             # 摇头信号的低通值
+        self._yaw_lp = 0.0             # 摇头信号的低通值（现在是 One Euro 的输出）
+        # One Euro 自适应滤波：静止时重滤波锁住噪声，移动时按速度抬高截止频率、减少滞后。
+        # beta=0 即退回原来的固定低通，所以这一层是"可回退的增益"，不是替换。
+        self._yaw_of = OneEuroFilter(C.YAW_MIN_CUTOFF, C.YAW_EURO_BETA,
+                                     C.YAW_EURO_DCUT, C.YAW_EURO_SPEED_DEAD)
+        self._axis_of = OneEuroFilter(C.AXIS_MIN_CUTOFF, C.AXIS_EURO_BETA,
+                                      C.AXIS_EURO_DCUT, C.AXIS_EURO_SPEED_DEAD)
+        # 速率上限（运动学约束）：先把"只在一帧里离群"的尖峰削幅，再送进滤波。
+        # 顺序不能反 —— 先滤波的话，尖峰的瞬时速度会先把 One Euro 的截止顶上去，
+        # 这层限制就失去意义了。
+        self._yaw_rl = RateLimiter(C.YAW_MAX_RATE)
         self._arm_t = 0.0              # "想离开死区"已持续的时长（起振门限用）
         self._axis_on = False          # 上一次横向输出是否非零
         self._move_on = False          # 平移那一路是否已在死区外（迟滞用）
@@ -286,6 +309,13 @@ class HeadController:
         self.yaw = 0.0
         self.pitch = 0.0
         self.jump = False
+        # 滤波器状态必须跟着一起作废。它内部保存着"上一次的输出与速度"，
+        # 只把输出置 0 而不清状态的话，重新捕获时滤波器会从旧状态往追，
+        # 既产生滞后，又可能在换了基线之后甩出一次反向跳动。
+        self._yaw_lp = 0.0
+        self._yaw_rl.reseed(0.0)
+        self._yaw_of.reseed(0.0)
+        self._axis_of.reseed(0.0)
 
     # ------------------------------------------------------------------ 主循环
     def update(self, st: FaceState, dt: float) -> None:
@@ -299,6 +329,7 @@ class HeadController:
         """
         C = self.cfg
         self.found = st.found
+        self._assess(st, dt)
 
         if not st.found:
             self.lost_t += dt
@@ -370,8 +401,13 @@ class HeadController:
         #   摇头不是。不滤波的话这点噪声会直接变成控制量，现象就是
         #   "头没动，选游戏的地方却一直不停左右选"。
         yaw_raw = (st.yaw - self.nyaw) * C.YAW_SIGN if st.pose_ok else 0.0
-        kf = 1.0 - math.exp(-dt / max(1e-3, C.YAW_TAU))
-        self._yaw_lp += kf * (yaw_raw - self._yaw_lp)
+        # ① 速率上限：孤立尖峰在这里就被削到阈值以下（真实运动无损）
+        # ② One Euro：速度大时抬高截止频率减少滞后，静止时回到重滤波锁噪声
+        # ONE_EURO_ENABLE=False 时走原来的固定时间常数，行为分毫不变。
+        if C.ONE_EURO_ENABLE:
+            self._yaw_lp = self._yaw_of.filter(self._yaw_rl.filter(yaw_raw, dt), dt)
+        else:
+            self._yaw_lp = lowpass_towards(self._yaw_lp, yaw_raw, C.YAW_TAU, dt)
         yaw_sig = self._yaw_lp if st.pose_ok else 0.0
 
         # 死区带迟滞：已经在"有控制"状态时用更低的退出阈值，
@@ -406,9 +442,13 @@ class HeadController:
             step = C.REACQ_STEP
             raw = max(self.axis - step, min(self.axis + step, raw))
 
-        # 基于时间的平滑：帧率变化时跟随手感保持一致（见 config 里的说明）
-        k = 1.0 - math.exp(-dt / max(1e-3, C.HEAD_TAU))
-        self.axis += k * (raw - self.axis)
+        # 基于时间的平滑：帧率变化时跟随手感保持一致（见 config 里的说明）。
+        # 这一路也交给 One Euro —— 它是**最终输出**，其滞后玩家感知最直接：
+        # 静止时压住残余抖动，大幅转头时不再拖泥带水。
+        if C.ONE_EURO_ENABLE:
+            self.axis = self._axis_of.filter(raw, dt)
+        else:
+            self.axis = lowpass_towards(self.axis, raw, C.HEAD_TAU, dt)
         ky = 1.0 - math.exp(-dt / 0.10)
         self.yaw += ky * (max(-1.0, min(1.0, yaw_sig)) - self.yaw)
 
@@ -461,6 +501,10 @@ class HeadController:
             "b_pitch": round(b_pitch, 3), "b_move": round(b_move, 3),
             "lift": round(lift, 3), "jump_sig": round(jump_sig, 3),
             "pose_ok": st.pose_ok, "face_w": round(st.w, 3),
+            # One Euro 的自适应量：静止时应贴近 min_cutoff，快速转头时明显抬高
+            "yaw_cut": round(self._yaw_of.cutoff_now, 2),
+            "yaw_spd": round(self._yaw_of.speed, 2),
+            "ax_cut": round(self._axis_of.cutoff_now, 2),
         }
 
     # ------------------------------------------------------------------ 基线重建
@@ -481,6 +525,52 @@ class HeadController:
         self._zero()
         self._odd_t = 0.0
 
+    # ------------------------------------------------------------------ 质量
+    _QUALITY_RANK = {"good": 0, "far": 1, "angle": 1, "poor": 2, "lost": 3}
+
+    def _assess(self, st: FaceState, dt: float) -> None:
+        """
+        给当前识别结果分级，供 UI 提示与降级使用。
+
+        迟滞的方向是刻意的：**变坏要快、变好要慢**。
+        · 变差立刻反映（Quality 掉下去时用户需要马上知道为什么不好使）；
+        · 恢复要稳定一段更长时间才认可 —— 否则每隔一两帧就good/poor 来回切，
+          屏幕上的提示会闪，而玩家根本没觉得中间断过。
+
+        HOLD 期间（短暂丢帧）不算丢失：那只是检测闪烁，与 tracking 的语义一致。
+        """
+        C = self.cfg
+        if not C.QUALITY_ENABLE:
+            self.quality, self.confidence = "good", 1.0
+            return
+
+        if not st.found:
+            conf = 0.0
+            raw = "lost" if self.lost_t > C.HOLD_AFTER else self._q_raw
+        else:
+            conf = max(0.0, min(1.0, st.score))
+            # 顺序有意义：脸太小是物理层面的不可靠，比置信度本身更根本
+            if st.w < C.QUALITY_MIN_FACE_W:
+                raw = "far"
+            elif conf < C.QUALITY_MIN_SCORE:
+                raw = "poor"
+            elif st.pose_ok and abs(st.yaw) > C.QUALITY_MAX_YAW:
+                raw = "angle"
+            else:
+                raw = "good"
+
+        self.confidence = conf
+        self._q_raw = raw
+        if raw == self.quality:
+            self._q_t = 0.0
+            return
+        self._q_t += dt
+        worse = self._QUALITY_RANK.get(raw, 0) > \
+            self._QUALITY_RANK.get(self.quality, 0)
+        if self._q_t >= (C.QUALITY_POOR_T if worse else C.QUALITY_RECOVER_T):
+            self.quality = raw
+            self._q_t = 0.0
+
     # ------------------------------------------------------------------ 动作键
     def _update_jump(self, lift: float, st: FaceState, dt: float) -> None:
         """
@@ -494,6 +584,12 @@ class HeadController:
         mouth = st.mouth_open > C.MOUTH_OPEN_THRESHOLD
         self._gap_t += dt
         if not self.jump:
+            # 质量很差时不再接受**新的**按下。
+            # 误触发跳跃是体感里最糟的失败（角色自己跑了），而"暂时不响应"
+            # 远比"乱响应"安全；已经按住的不受影响 —— 那会变成
+            # "按着按着突然松开"，同样是事故。
+            if C.QUALITY_POOR_SUPPRESS_JUMP and self.quality in ("poor", "lost"):
+                return
             if mouth or (lift > C.JUMP_ON and self._gap_t >= C.JUMP_MIN_GAP):
                 self.jump = True
                 self._jump_t = 0.0
@@ -602,7 +698,9 @@ class HeadController:
         # found 传的是**迟滞后的**状态：短暂丢帧期间仍然是 True，
         # 这样 shell 的"丢失计时"不会被检测闪烁反复清零。
         return GameInput(axis=self.axis, jump=self.jump, up=self.up,
-                         head_y=self.head_y, yaw=self.yaw, found=self.tracking)
+                         head_y=self.head_y, yaw=self.yaw, found=self.tracking,
+                         confidence=self.confidence, quality=self.quality,
+                         hint=self.cfg.QUALITY_TIPS.get(self.quality, ""))
 
 
 # =========================================================================== #

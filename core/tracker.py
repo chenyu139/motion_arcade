@@ -82,6 +82,230 @@ def _plausible_face(f, w: int, h: int) -> bool:
     return (m <= cx <= 1.0 - m) and (m <= cy <= 1.0 - m)
 
 
+def _face_score(f) -> float:
+    """
+    YuNet 每行的第 15 个值是检测置信度（0~1）。
+
+    防御式取值：不同 OpenCV 版本 / 模型文件的输出列数可能不一致，
+    取不到时返回 1.0（= 这一层过滤不生效），而不是 0（= 全部候选被丢掉）。
+    **失败方向必须是"少一层保护"，绝不能是"整个后端失效"。**
+    """
+    try:
+        v = float(f[14])
+    except Exception:                                           # noqa: BLE001
+        return 1.0
+    return v if v == v else 1.0                                 # NaN 也当作取不到
+
+
+class IlluminationGuard:
+    """
+    光照自适应：在把画面**送进检测器之前**把它规整到模型习惯的分布。
+
+    YuNet 是在常规光照的数据集上训练的。实际使用里有三类常见场景会让它
+    明显掉点，而被用户读成"识别不准"：
+        · 晚上只开一盏灯 / 背光坐    → 整体偏暗，细节埋在噪声里
+        · 背对着窗户                 → 逆光，脸几乎是一块剪影
+        · 均匀的顶光                 → 对比度极低，五官没有可判别的结构
+    修法不是重训练模型，而是把画面先提亮/增强局部对比（gamma + CLAHE）。
+
+    两个刻意的取舍
+    --------------
+    1. **只在真的需要时才处理。** 正常光照下做 CLAHE 会放大噪点，
+       还会把肤色 pushed 到阈值之外 —— 对手部肤色检测是负收益。
+       所以这里先用亮度/对比度统计判断，不够则下一档。
+    2. **带迟滞。** 如果逐帧判断"要不要增强"，在阈值附近的画面会
+       明暗来回闪 —— 那比一直不增强更难看。判定之后锁定若干帧。
+    """
+
+    def __init__(self) -> None:
+        self._on = False
+        self._frames = 0
+        self._mode = "normal"
+        self._clahe = None
+
+    def _get_clahe(self):
+        if self._clahe is None:
+            self._clahe = cv2.createCLAHE(
+                clipLimit=C.CLAHE_CLIP,
+                tileGridSize=(C.CLAHE_GRID, C.CLAHE_GRID))
+        return self._clahe
+
+    def ensure(self, frame: np.ndarray) -> Tuple[np.ndarray, str]:
+        """返回 (可能已增强的画面, 模式串)。模式串进日志，方便真机对照。"""
+        if not C.ILLUM_ENABLE:
+            return frame, "off"
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean = float(gray.mean())
+        std = float(gray.std())
+
+        need_dark = mean < C.ILLUM_DARK_T
+        need_bright = mean > C.ILLUM_BRIGHT_T
+        need_flat = std < C.ILLUM_LOW_CONTRAST_T
+        if need_dark or need_bright or need_flat:
+            self._on = True
+            self._frames = C.ILLUM_HYST_FRAMES
+            self._mode = "dark" if need_dark else (
+                "bright" if need_bright else "flat")
+        elif self._frames > 0:
+            self._frames -= 1                       # 迟滞期：延续上一次的判定
+        else:
+            self._on = False
+            self._mode = "normal"
+
+        if not self._on:
+            return frame, self._mode
+        return self._apply(frame, mean, std), self._mode
+
+    def _apply(self, frame: np.ndarray, mean: float, std: float) -> np.ndarray:
+        # 只动亮度通道，色度原样保留 —— 否则肤色会被推离手部检测用的阈值区间
+        ycc = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+        y = ycc[:, :, 0]
+        if mean < C.ILLUM_DARK_T:
+            gamma = C.ILLUM_GAMMA_DARK
+        elif mean > C.ILLUM_BRIGHT_T:
+            gamma = C.ILLUM_GAMMA_BRIGHT
+        else:
+            gamma = 1.0
+        if abs(gamma - 1.0) > 0.01:
+            # 注意指数是 gamma **本身**，不是它的倒数。
+            # 归一化像素 x∈[0,1]：x^γ 在 γ<1 时变大（提亮）、γ>1 时变小（压暗）。
+            # 写成 x^(1/γ) 会把暗画面压得更暗 —— 校验时被 Eclipseبان 出来的：
+            # 平均亮度 38 反而掉到 35，与"提亮"完全相反。
+            lut = np.array([((i / 255.0) ** gamma) * 255.0
+                            for i in range(256)], dtype=np.uint8)
+            y = cv2.LUT(y, lut)
+        # 低对比或偏暗时再叠 CLAHE：它做的是局部对比，能把逆光下的五官结构拉回来
+        if std < C.ILLUM_LOW_CONTRAST_T or mean < C.ILLUM_DARK_T:
+            y = self._get_clahe().apply(y)
+        ycc[:, :, 0] = y
+        return cv2.cvtColor(ycc, cv2.COLOR_YCrCb2BGR)
+
+
+class FaceTargetSelector:
+    """
+    多人 / 多候选场景下的主目标选择。
+
+    原来每帧取"面积最大的框"，这在只有一个人时没问题，多人时会坏得很明显：
+      · 两个人的脸面积此消彼长（谁稍微往前坐一点），目标就在两人之间来回跳；
+      · 有人从背景里走过时可能短暂地比玩家更靠前，主角会被抢走。
+    体感控制的可用性取决于**目标不漂移**，至于某几帧里谁更靠近镜头根本不重要。
+
+    所以这里引入"所有权"：现任目标享有优势，挑战者必须
+        **明显更优（HYST 倍）且连续领先若干帧** 才允许夺权；
+    目标短暂消失（手挡脸、低头捡东西）之后回到原位置还能立刻认回来，
+    而不是走一遍"完整丢失 → 重新初始化"的流程。
+    """
+
+    def __init__(self) -> None:
+        self._w = 1.0
+        self._h = 1.0
+        self._cx: Optional[float] = None
+        self._cy: Optional[float] = None
+        self._size: Optional[float] = None
+        self._last = 0
+        self._miss = 0
+        self._chall: Optional[Tuple[int, int]] = None
+
+    def reset(self) -> None:
+        self._cx = self._cy = self._size = None
+        self._last = 0
+        self._miss = 0
+        self._chall = None
+
+    # ------------------------------------------------------------------ #
+    def _cand_info(self, f) -> Tuple[float, float, float, float, float]:
+        """解一个候选：(面积, 面积分, 中心x, 中心y, 连续性分)。"""
+        x, y, bw, bh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
+        area = (bw * bh) / max(1.0, self._w * self._h)
+        # 饱和度取 0.12（而不是最初的 0.05）：0.05 会让两个正常人脸框
+        # **都顶到满分**，面积里携带的信息被抹平，"谁更靠近"就看不出来了。
+        area_t = min(1.0, area / 0.12)
+        cx = (x + bw / 2.0) / max(1.0, self._w)
+        cy = (y + bh / 2.0) / max(1.0, self._h)
+
+        if self._cx is None:
+            return area, area_t, cx, cy, 0.0
+
+        # 连续性：位置要近、尺度也要接近。
+        # 位置用线性衰减（0.35 个画面宽内都当作"可能还是同一个人"）；
+        # 尺度用对数比 —— 距离变一点点，面积是平方级变化的，用线性比不公平。
+        d = math.hypot(cx - self._cx, cy - self._cy)
+        pos_t = max(0.0, 1.0 - d / 0.35)
+        sr = area / max(1e-6, self._size or 1e-6)
+        size_t = max(0.0, 1.0 - abs(math.log(max(1e-3, sr))) / 0.7)
+        return area, area_t, cx, cy, pos_t * (0.4 + 0.6 * size_t)
+
+    def pick(self, cands, w: int, h: int) -> int:
+        """
+        返回选中下标。四条规则按优先级排列，每一条对应一类真实场景。
+        """
+        self._w, self._h = float(w), float(h)
+        n = len(cands)
+        infos = [self._cand_info(f) for f in cands]
+        areas = [i[0] for i in infos]
+        area_ts = [i[1] for i in infos]
+        conts = [i[4] for i in infos]
+
+        # ① 刚经历过"没有任何候选"（手挡脸 / 低头 / 眨眼被判丢）
+        #    这时的问题不是"谁来抢位置"，而是"要把刚才那个人认回来"，
+        #    所以按连续性直接选，**不走下面那套防抢夺的迟滞** ——
+        #    否则遮挡结束后的前几帧会停在错误的人身上。
+        if self._miss > 0:
+            best = max(range(n), key=lambda i: conts[i] + area_ts[i] * 0.05)
+            self._miss = 0
+            self._commit(cands[best], best)
+            return best
+
+        # ② 没有历史（第一次出现 / 记忆已过期）→ 按显著性选最大的
+        if self._cx is None:
+            best = max(range(n), key=lambda i: area_ts[i])
+            self._commit(cands[best], best)
+            return best
+
+        cur = min(self._last, n - 1)
+
+        # ③ 出现**明显更大**的目标 → 不是同一层次的竞争，允许接管。
+        #    连续性天然偏向现任，没有这条的话目标会被永久锁死。
+        if C.FACE_TAKEOVER_RATIO > 1.0 and areas[cur] > 1e-9:
+            big = [i for i in range(n)
+                   if areas[i] > areas[cur] * C.FACE_TAKEOVER_RATIO]
+            if big:
+                b = max(big, key=lambda i: areas[i])
+                if self._chall is not None and self._chall[0] == b:
+                    cnt = self._chall[1] + 1
+                else:
+                    cnt = 1
+                self._chall = (b, cnt)
+                if cnt >= C.FACE_SWITCH_FRAMES:      # 连续确认，挡住单帧误检框篡位
+                    self._chall = None
+                    self._commit(cands[b], b)
+                    return b
+                return cur
+
+        # ④ 面积相近 → 维持现任不动。
+        #    这是"多人同框不再来回甩"的关键：谁这一刻稍大一点也不重要，
+        #    重要的是目标不要漂到别人身上去。
+        self._chall = None
+        self._commit(cands[cur], cur)
+        return cur
+
+    def note_missing(self) -> None:
+        """
+        这一帧没有任何可用候选。
+
+        不清零 —— 保留一段记忆，好让"手挡脸 / 低头"这类短暂遮挡结束后
+        立刻认回同一个人（避免重新初始化、避免再来一遍校准）。
+        """
+        self._miss += 1
+        if self._miss > C.FACE_TRACK_MISS:
+            self.reset()
+
+    def _commit(self, f, idx: int) -> None:
+        area, _, cx, cy, _ = self._cand_info(f)
+        self._cx, self._cy, self._size = cx, cy, area
+        self._last = idx
+
+
 class FaceBackendYuNet:
     name = "YuNet"
 
@@ -90,6 +314,7 @@ class FaceBackendYuNet:
             raise FileNotFoundError(YUNET_PATH)
         self._det = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 240), 0.65, 0.3, 5000)
         self._size = None
+        self._sel = FaceTargetSelector()
 
     def detect(self, frame: np.ndarray, w: int, h: int) -> FaceState:
         if self._size != (w, h):
@@ -97,15 +322,26 @@ class FaceBackendYuNet:
             self._size = (w, h)
         _, faces = self._det.detect(frame)
         if faces is None or len(faces) == 0:
+            self._sel.note_missing()
             return FaceState(found=False)
-        # 合理性筛选：只在"像人脸"的框里挑最大的。
-        # 不做这层过滤的话，墙上的图案、反光、抱枕都可能被判成脸，
-        # 而它们的中心常常贴边 → 归一化后 cx 直接打到 0 或 1 →
-        # 角色瞬间被甩到最边上。这是"没识别到头却在乱动"的一个来源。
-        cands = [f for f in faces if _plausible_face(f, w, h)]
+        # ---- 双重候选过滤 ----
+        #  1) 几何合理性（尺寸 / 宽高比 / 面积 / 离边距）
+        #  2) **检测器自己的置信度** —— 这一层以前完全没用到。
+        #     YuNet 每行的第 15 个值是 score；低于阈值的框多半是背景纹理，
+        #     而漏掉它们走的是安全的冻结/归零路径。
+        cands = []
+        for f in faces:
+            if not _plausible_face(f, w, h):
+                continue
+            if _face_score(f) < C.FACE_MIN_SCORE:
+                continue
+            cands.append(f)
         if not cands:
+            self._sel.note_missing()
             return FaceState(found=False)
-        f = max(cands, key=lambda r: float(r[2]) * float(r[3]))
+        # 主目标选择（多人场景不再每帧取最大 —— 那样会把目标在几个人之间来回甩）
+        f = cands[self._sel.pick(cands, w, h)]
+        conf = _face_score(f)
         x, y, bw, bh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
         # YuNet 的 5 个关键点：右眼、左眼、鼻尖、右嘴角、左嘴角
         pts = [(float(f[i]), float(f[i + 1])) for i in (4, 6, 8, 10, 12)]
@@ -132,6 +368,7 @@ class FaceBackendYuNet:
             box=(int(x), int(y), int(bw), int(bh)),
             landmarks=pts,
             nose=nose,
+            score=conf,
         )
 
     @staticmethod
@@ -478,6 +715,8 @@ class MotionTracker:
         self._face_ms = 0.0
         self._vision_ms = 0.0
         self._frame_i = 0
+        self._illum = IlluminationGuard()
+        self._illum_mode = "normal"
         self._stats = {"pose": 0, "hand": 0, "n": 0}
 
         # ---- 视觉引擎（自动按平台选后端）----
@@ -547,13 +786,25 @@ class MotionTracker:
             if frame.shape[1] != C.CAM_W or frame.shape[0] != C.CAM_H:
                 frame = cv2.resize(frame, (C.CAM_W, C.CAM_H))
             small = cv2.resize(frame, (C.DETECT_W, det_h))
+            # ---- 光照自适应 ----
+            # 只给人脸检测的那一份画面做增强：手部用的是 YCrCb/HSV 肤色阈值，
+            # 过度校正会把肤色推出判定区间，所以要绕开它（ILLUM_FACE_ONLY）。
+            face_img = small
+            if C.ILLUM_ENABLE:
+                enh, mode = self._illum.ensure(small)
+                self._illum_mode = mode
+                if not C.ILLUM_FACE_ONLY:
+                    small = enh
+                    face_img = enh
+                else:
+                    face_img = enh
 
             # ---- 1) 头部主信号：YuNet 每帧跑，只露头也能稳（约 2ms）----
             st = FaceState(found=False)
             if self._face is not None:
                 t0 = time.time()
                 try:
-                    st = self._face.detect(small, C.DETECT_W, det_h)
+                    st = self._face.detect(face_img, C.DETECT_W, det_h)
                 except Exception:                                # noqa: BLE001
                     st = FaceState(found=False)
                 self._face_ms += 0.25 * (((time.time() - t0) * 1000.0) - self._face_ms)
@@ -711,6 +962,7 @@ class MotionTracker:
             "face": self._face_ms,
             "vision": self._vision_ms,
             "fps": self._fps,
+            "illum": self._illum_mode,      # 当前光照判定：normal/dark/bright/flat
             "pose_rate": self._stats["pose"] / n,
             "hands_rate": self._stats["hand"] / n,
         }
