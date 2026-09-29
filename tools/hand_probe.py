@@ -88,6 +88,7 @@ def main() -> int:
             shands = skin.detect(vimg, fbox, vimg.shape[1], vimg.shape[0])
 
             hc.update(hands, dt)
+            d = hc._debug
             row = {
                 "t": now - t0,
                 "face": st.found,
@@ -96,17 +97,18 @@ def main() -> int:
                             round(h.open, 2)) for h in vhands[:2]],
                 "shands": [(round(h.x, 2), round(h.y, 2), round(h.area, 4))
                            for h in shands[:2]],
-                "main_tid": hc._main.tid if hc._main else None,
-                "miss": hc._main.miss if hc._main else -1,
+                # 第二版 HandController 的诊断字段（最近邻跟随，无 _main/tid）
+                "src": getattr(hc, "hand_src", "-"),
+                "raw": d.get("raw", None),
+                "hold": d.get("hold", 0.0),
                 "seen": hc.seen,
                 "sx": round(hc.sx, 3), "sy": round(hc.sy, 3),
             }
             log.append(row)
-            if int(now - t0) != int(last - t0 if 'last_s' in dir() else now - t0):
-                pass
             if len(log) % 30 == 0:
                 print(f"  t={row['t']:5.1f}s vision手{row['vh']} skin手{row['sh']} "
-                      f"→ 主手 tid={row['main_tid']} 光标=({row['sx']:.2f},{row['sy']:.2f}) "
+                      f"→ 跟随[{row['src']}] 原始={row['raw']} "
+                      f"光标=({row['sx']:.2f},{row['sy']:.2f}) "
                       f"{'·丢失' if not row['seen'] else ''}")
     except KeyboardInterrupt:
         pass
@@ -120,7 +122,16 @@ def main() -> int:
     both = sum(1 for r in log if r["vh"] > 0 and r["sh"] > 0)
     only_s = sum(1 for r in log if r["vh"] == 0 and r["sh"] > 0)
     seen = sum(1 for r in log if r["seen"])
-    tids = {r["main_tid"] for r in log if r["main_tid"]}
+    skin_pct = sum(1 for r in log if r["src"] == "skin") / n
+    # 光标与最近 Vision 手的偏差（跟随质量的核心指标）
+    devs = []
+    for r in log:
+        if r["vh"] > 0 and r["seen"] and r["raw"]:
+            rx, ry = r["raw"]
+            near = min((math.hypot(h[0] - r["sx"], h[1] - r["sy"])
+                        for h in r["vhands"]), default=99)
+            devs.append(near)
+    dev_med = sorted(devs)[len(devs) // 2] if devs else -1
     print("\n" + "=" * 70)
     print(f"样本 {len(log)} 帧（{args.secs}s）")
     print(f"  Vision 21点 看到手: {v_on:4d} 帧 {v_on/n:6.1%}")
@@ -128,7 +139,9 @@ def main() -> int:
     print(f"  两者同时:           {both:4d} 帧")
     print(f"  仅 skin（误检高危）:{only_s:4d} 帧")
     print(f"  HandController 判定可见: {seen:4d} 帧 {seen/n:6.1%}")
-    print(f"  主手 tid 集合: {sorted(t for t in tids if t)} （频繁变化=切换过度）")
+    print(f"  光标来源 skin 占比: {skin_pct:6.1%}（高=Vision 长期缺席）")
+    if dev_med >= 0:
+        print(f"  光标↔最近Vision手 中位偏差: {dev_med:.3f}（<0.10=跟得上）")
     print("=" * 70)
     diag = []
     if v_on / n < 0.2:
@@ -137,10 +150,11 @@ def main() -> int:
     if only_s / n > 0.3:
         diag.append("⚠ 大量帧只有 skin 看到'手'：肤色兜底在独撑，"
                     "而这意味着误检风险很高（脖子/木桌/窗帘都是肤色）。")
-    if len(tids - {None}) > 4:
-        diag.append("⚠ 主手 ID 频繁变化：跟踪在反复丢/换目标。")
     if seen / n < 0.3:
         diag.append("⚠ 光标大部分时间不可见：链路在'丢失'状态。")
+    if dev_med > 0.12:
+        diag.append(f"⚠ 光标与 Vision 手的偏差偏大（{dev_med:.3f}）："
+                    "跟随层在跟别的东西（误检）或滤波滞后过大。")
     if not diag:
         diag.append("✓ 各层看起来都在工作 —— 若仍'不跟'，"
                     "请把这份输出发回，并描述手往哪边动、光标往哪边动。")
