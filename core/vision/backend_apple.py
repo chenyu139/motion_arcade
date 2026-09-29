@@ -227,15 +227,7 @@ class AppleVisionEngine:
         if not results:
             return PoseFrame(found=False, source=NAME)
         obs = results[0]
-        pts = obs.recognizedPoints()
-        joints: Dict[str, Joint] = {}
-        for k, p in pts.items():
-            name = _canon(k, _BODY_MAP)
-            if name is None:
-                continue
-            loc = p.location()
-            # Vision 是左下原点，转成内部的左上原点
-            joints[name] = Joint(float(loc.x), 1.0 - float(loc.y), float(p.confidence()))
+        joints = self._extract_points(obs, _BODY_MAP)
         found = len([j for j in joints.values() if j.ok]) >= 3
         return PoseFrame(found=found, joints=joints, source=NAME)
 
@@ -243,14 +235,7 @@ class AppleVisionEngine:
     def _read_hands(self) -> List[HandFrame]:
         out: List[HandFrame] = []
         for obs in (self._hand_req.results() or []):
-            pts = obs.recognizedPoints()
-            joints: Dict[str, Joint] = {}
-            for k, p in pts.items():
-                name = _canon(k, _HAND_MAP)
-                if name is None:
-                    continue
-                loc = p.location()
-                joints[name] = Joint(float(loc.x), 1.0 - float(loc.y), float(p.confidence()))
+            joints = self._extract_points(obs, _HAND_MAP)
             if len(joints) < self.min_hand_joints:
                 continue
             w = joints.get("wrist")
@@ -262,6 +247,65 @@ class AppleVisionEngine:
             hf.side = "left" if hf.center.x < 0.5 else "right"
             out.append(hf)
         return out
+
+    # ------------------------------------------------------------------ 取点
+    @staticmethod
+    def _extract_points(obs, table: Dict[str, str]) -> Dict[str, Joint]:
+        """
+        从 observation 提取关键点，兼容两代 API：
+
+          · 新（macOS 27 beta 实测）：`availableJointNames()` 给出关节名单
+            （FourCharCode 缩写，如 'VNHLKWRI'），再逐个
+            `recognizedPointForJointName_error_(name, None)` 取点。
+            旧的 `recognizedPoints()` 在这个系统上**不存在** ——
+            调用直接 AttributeError，异常被上层吞掉后表现为
+            "Vision 检出率 0%"（真机踩过：手部主路径完全静默失效）。
+          · 旧：`recognizedPoints()` 一次返回 {key: point} 字典。
+
+        坐标系：Vision 是左下原点，这里统一转成内部的左上原点（1.0 - y）。
+        """
+        joints: Dict[str, Joint] = {}
+
+        # 新 API 路径
+        ajn = getattr(obs, "availableJointNames", None)
+        if callable(ajn):
+            try:
+                names = ajn()
+            except Exception:                                        # noqa: BLE001
+                names = None
+            if names:
+                for jn in names:
+                    try:
+                        p, _err = obs.recognizedPointForJointName_error_(jn, None)
+                    except Exception:                                # noqa: BLE001
+                        continue
+                    if p is None:
+                        continue
+                    name = _canon(jn, table)
+                    if name is None:
+                        continue
+                    loc = p.location()
+                    joints[name] = Joint(float(loc.x), 1.0 - float(loc.y),
+                                         float(p.confidence()))
+                if joints:
+                    return joints
+                # 名单为空/全部失败 → 落到旧 API 试一次（也许只是这帧没点）
+
+        # 旧 API 路径
+        rp = getattr(obs, "recognizedPoints", None)
+        if callable(rp):
+            try:
+                pts = rp()
+            except Exception:                                        # noqa: BLE001
+                return joints
+            for k, p in (pts or {}).items():
+                name = _canon(k, table)
+                if name is None:
+                    continue
+                loc = p.location()
+                joints[name] = Joint(float(loc.x), 1.0 - float(loc.y),
+                                     float(p.confidence()))
+        return joints
 
 
 # --------------------------------------------------------------------------- #
