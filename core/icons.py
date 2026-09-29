@@ -45,7 +45,6 @@ def _make(name, c, a):
     def draw(s):
         S = s.get_width()
         u = S / 100.0          # 归一化单位：100 = 图标边长
-        m = S / 2.0
         W = a                  # 高光色
 
         def L(p0, p1, col, w):

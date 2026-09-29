@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Sequence, Tuple
 
 import pygame
 
@@ -226,7 +226,6 @@ def _jinli(s, w, h, c):
                   (w * 0.64, base - h * 0.42), (w * 0.44, base - h * 0.42)],
               U.shade(c, 1.48), 0, ss=2)
     # 成串灯笼（小一点、稀一点，别把牌坊盖住）
-    rng = random.Random(11)
     for i in range(5):
         x = w * (0.12 + i * 0.19)
         for k in range(2):

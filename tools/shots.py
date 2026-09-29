@@ -27,7 +27,6 @@ pygame.init()
 pygame.display.set_mode((1920, 1080), pygame.SCALED)
 
 from core import theme as U  # noqa: E402
-from core.inputs import GameInput  # noqa: E402
 from core import base as B  # noqa: E402
 from tools.bot import bot_input  # noqa: E402
 import games  # noqa: E402  （导入即注册）

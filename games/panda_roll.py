@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional
+from typing import List
 
 import pygame
 
@@ -92,7 +92,6 @@ class PandaRollGame(BaseGame):
         # 星点
         for _ in range(160):
             x, y = rng.uniform(0, W), rng.uniform(0, HORIZON)
-            a = rng.randint(60, 190)
             self._bg.fill((255, 255, 255), (int(x), int(y), 2, 2))
         self._bg.blit(U.vignette(W, H, 150), (0, 0))
 

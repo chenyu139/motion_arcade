@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pygame
 
@@ -97,7 +97,6 @@ class TennisGame(BaseGame):
         """画球场白线（含透视的边线、发球区、底线）。"""
         s = self._bg
         ct = self._court_top
-        h = self.H - ct
         # 地面白线
         U.aa_line(s, (COURT_L, GROUND), (COURT_R, GROUND), (238, 244, 250, 190), 6)
         # 边线（上方收缩，制造透视）
@@ -371,7 +370,6 @@ class TennisGame(BaseGame):
         # 拍面
         rx = self.px + 72 + sw * 46
         ry = GROUND - 150 - sw * 66
-        ang = -0.5 + sw * 2.3
         U.aa_ellipse(surf, (int(rx - 30), int(ry - 40), 60, 80), (24, 30, 46), 0, ss=3)
         U.aa_ellipse(surf, (int(rx - 24), int(ry - 34), 48, 68), (60, 200, 236), 0, ss=3)
         for j in range(4):

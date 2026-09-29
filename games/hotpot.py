@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 import pygame
 
 from core import art as A
-from core import sichuan as SC
 from core import theme as U
 from core.base import BaseGame, register
 from core.inputs import GameInput

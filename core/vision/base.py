@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from .types import HandFrame, Joint, PoseFrame, VisionFrame
+from .types import VisionFrame
 
 
 class BaseBackend:

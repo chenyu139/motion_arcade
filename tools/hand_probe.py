@@ -26,12 +26,10 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cv2  # noqa: E402
-import numpy as np  # noqa: E402
-
 from core import config as C                    # noqa: E402
 from core.inputs import HandController          # noqa: E402
 from core.tracker import (HandBackendSkin,      # noqa: E402
-                          IlluminationGuard, MotionTracker)
+                          MotionTracker)
 
 
 def main() -> int:
@@ -55,7 +53,6 @@ def main() -> int:
 
     skin = HandBackendSkin()
     hc = HandController(C)
-    illum = IlluminationGuard()
 
     log = []
     t0 = time.time()

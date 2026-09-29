@@ -12,7 +12,6 @@ games/hoop.py
 from __future__ import annotations
 
 import math
-import random
 from typing import List, Optional
 
 import pygame

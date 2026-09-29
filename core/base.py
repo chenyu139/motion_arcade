@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import sys
 import random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 

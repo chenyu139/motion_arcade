@@ -21,7 +21,6 @@ import pygame
 from core import art as A
 from core import theme as U
 from core import scene as SCN
-from core import sprites as SP
 from core.base import BaseGame, register
 from core.inputs import GameInput
 

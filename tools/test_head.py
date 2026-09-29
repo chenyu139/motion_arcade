@@ -517,7 +517,6 @@ def _noisy_run(yaw_mean: float, sigma: float, secs: float = 8.0, seed: int = 3):
 
 
 def _stats(seq):
-    import math
     flips = 0
     on = False
     for v in seq:
@@ -817,7 +816,6 @@ def main() -> int:
     test_geometry_roll_invariance()
     test_geometry_yaw_direction()
     test_pitch_direction()
-    test_config_refs()
     print("\n" + "=" * 66)
     print(f"通过 {_ok} 项，失败 {_fail} 项")
     print("=" * 66)

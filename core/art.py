@@ -358,7 +358,6 @@ def figure(
     base_x = W / 2.0
     base_y = H - pad                          # 脚底
     flip = p.get("flip", 1)
-    sq = p.get("squash", 1.0)
 
     def _d(s):
         # ---- 比例（相对身高的卡通写实混合，约 5.5 头身）----
@@ -367,7 +366,6 @@ def figure(
         sh_y = base_y - h * (0.800 - 0.020 * crouch)
         neck_y = base_y - h * 0.832
         head_r = h * 0.091
-        head_y = base_y - h * 0.909
         thigh = h * 0.230 * (1.0 - 0.20 * crouch)
         shin = h * 0.225 * (1.0 - 0.14 * crouch)
         upper = h * 0.172

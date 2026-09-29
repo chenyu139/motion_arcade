@@ -18,7 +18,6 @@ from typing import List
 
 import pygame
 
-from core import art as A
 from core import theme as U
 from core import scene as SCN
 from core.base import BaseGame, register

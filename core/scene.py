@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 import os
 import random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pygame
@@ -560,7 +560,6 @@ def _world_overlays(w: int, h: int, preset: str, ground_y: int,
 
     # ---- 5) 前景失焦剪影：制造"三层空间"最有效的一刀（第 1 项）----
     fg = pygame.Surface((w, h), pygame.SRCALPHA)
-    rng = random.Random(97)
     col = tuple(P["fg"]) + (P["fg_a"],)
     # 前景必须**锚在画面边缘**、且只在底部与两角。
     # 踩过的坑：第一版在两侧画了悬空的窄竖椭圆，模糊之后看起来就是两块

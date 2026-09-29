@@ -231,7 +231,6 @@ class FishingGame(BaseGame):
             col = U.mix(col, (30, 60, 80), f["sunk"])
         x, y = f["x"], f["y"]
         d = 1 if f["vx"] >= 0 else -1
-        s = size / 40.0
         k = 1.0 - f["sunk"] * 0.7
         if SP.draw(surf, "fish", x, y, height=size * 1.5 * k, anchor="center",
                    flip=(d < 0)):

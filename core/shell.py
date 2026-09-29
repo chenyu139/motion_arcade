@@ -24,8 +24,6 @@ core/shell.py
 from __future__ import annotations
 
 import math
-import os
-import sys
 import time
 from dataclasses import replace
 from typing import List, Optional, Tuple
@@ -36,7 +34,6 @@ import pygame
 
 from . import base as B
 from . import config as C
-from . import icons
 from . import theme as U
 from .inputs import (BodyController, FaceState, GameInput, HandController, HandState,
                      HeadController)

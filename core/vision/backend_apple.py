@@ -22,12 +22,11 @@ macOS / iOS 后端：Apple Vision framework（通过 pyobjc）。
 """
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .types import (COCO17, HAND_JOINTS, HandFrame, Joint, PoseFrame, VisionFrame)
+from .types import HandFrame, Joint, PoseFrame, VisionFrame
 
 # ---- pyobjc 延迟导入：非 macOS 上导入本模块不应报错 ----
 try:

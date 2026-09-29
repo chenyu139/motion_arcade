@@ -168,7 +168,6 @@ def main() -> int:
             print(f"    人体: {len(keys)} 点可用，例如 {keys[:6]}")
 
     # ---- 性能 ----
-    args = {".jpg": cv2.IMWRITE_JPEG_QUALITY}
     buf = cv2.imencode(".jpg", frames[0], [cv2.IMWRITE_JPEG_QUALITY, 92])[1]
     fr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     for _ in range(10):
@@ -179,7 +178,7 @@ def main() -> int:
         engine.run(fr)
         ts.append((time.perf_counter() - t0) * 1000.0)
     med, mx = statistics.median(ts), max(ts)
-    print(f"\n性能（640×480，含 numpy→CGImage 转换）：")
+    print("\n性能（640×480，含 numpy→CGImage 转换）：")
     print(f"    中位 {med:.2f} ms　最差 {mx:.2f} ms　→ 理论 {1000 / med:.0f} fps")
     print(f"    30Hz 下占用约 {med * 30 / 10:.0f}% 单核")
     return 0

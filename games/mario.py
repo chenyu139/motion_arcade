@@ -12,14 +12,11 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional, Tuple
-
 import pygame
 
 from core import art as A
 from core import scene as SCN
 from core import sprites as SP
-from core import sichuan as SC
 from core import config as C
 from core import theme as U
 from core.base import BaseGame, register

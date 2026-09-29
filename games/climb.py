@@ -110,7 +110,6 @@ class ClimbGame(BaseGame):
         for i, h in enumerate(self.holds):
             self._paint_hold(s, h)
         # 顶部旗帜
-        top = self.holds[HOLDS - 1]
         return s
 
     @staticmethod
@@ -138,7 +137,6 @@ class ClimbGame(BaseGame):
         self.climb_anim = max(0.0, self.climb_anim - dt * 2.6)
 
         # 体力
-        hanging = True
         drain = 0.070
         on_rest = self.holds[self.idx]["kind"] == "rest" and abs(self.px - self.holds[self.idx]["x"]) < 70
         if on_rest:

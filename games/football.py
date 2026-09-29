@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pygame
 
@@ -243,8 +243,6 @@ class FootballGame(BaseGame):
     def _resolve(self, b):
         self.phase = "result"
         self.phase_t = 0.0
-        kx0 = self.keeper_x - KEEPER_W / 2 - 16
-        kx1 = self.keeper_x + KEEPER_W / 2 + 16
         near_keeper = abs(b["tx"] - self.keeper_x) < KEEPER_W * 0.62
         corner = (b["tx"] < GOAL_L + 130 or b["tx"] > GOAL_R - 130) or b["ty"] < CROSSBAR_Y + 92
         saved = near_keeper and self.keeper_dive > 0 and random.random() < 0.74
@@ -368,8 +366,6 @@ class FootballGame(BaseGame):
         主罚视角：不画整人，只画一条从画面底部伸向球门的腿，
         更接近"站在点球点后面"的第一人称感觉，也避免比例失真。
         """
-        thigh = A.shade_capsule(74, 210, (240, 244, 252), ss=3)
-        shin = A.shade_capsule(58, 200, (242, 200, 166), ss=3)
         hip = (BALL_X0 - 340, 1120)
         knee = (BALL_X0 - 196, 968)
         # 摆动：射门时腿前摆

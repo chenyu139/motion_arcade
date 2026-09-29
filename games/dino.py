@@ -133,7 +133,6 @@ class DinoGame(BaseGame):
         return U.bake_raw(("bird", 0), (W, H), _d, 3)
 
     def _spawn(self, x: float):
-        H = self.H
         gap = max(220.0, GAP0 - self.passed * 9.0)
         top = random.uniform(self.TOP + 120, self.H - 200 - gap)
         self.pillars.append({"x": x, "top": top, "gap": gap, "passed": False})

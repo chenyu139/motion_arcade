@@ -31,7 +31,7 @@ core/menu.py
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pygame
 
@@ -127,7 +127,6 @@ class Menu:
 
     def _card_rect(self, i: int) -> pygame.Rect:
         """卡片在**当前页**中的位置。"""
-        p = i // PER_PAGE
         k = i % PER_PAGE
         r, c = divmod(k, COLS)
         return pygame.Rect(GRID_X + c * (CARD_W + GAP_X),
@@ -245,8 +244,6 @@ class Menu:
         for g in self.games:
             cats[g["category"]] = cats.get(g["category"], 0) + 1
         info = "　·　".join(f"{k} {v}" for k, v in cats.items())
-        UI.text(surf, f"共 {self.n} 款　|　{info}", (C.DESIGN_W - 64, 92),
-                UI.T_XS - 4, UI.PAPER_DIM, align := None or None) if False else None
         img = U.outline_text(f"共 {self.n} 款　|　{info}", UI.T_XS - 4,
                              (206, 196, 240), UI.INK, 3, True)
         surf.blit(img, (C.DESIGN_W - 64 - img.get_width(), 92))
