@@ -84,14 +84,77 @@ _HAND_MAP = {
 }
 
 
+def _build_code_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    在模块加载时从 Vision 模块常量构建"任意标识 → 规范名"的映射表。
+
+    背景（本 bug 让手部/人体在这台 macOS 27 beta 上从未工作过）：
+    不同 macOS+pyobjc 组合下，关节 key 的暴露形式完全不同 ——
+      · 旧系统：全名字符串 'VNHumanHandPoseObservationJointNameWrist'
+      · 新系统：FourCharCode 缩写 'VNHLKWRI'
+    旧 `_canon` 按全名做后缀匹配，新系统上 22 个手部关节 + 46 个人体关节
+    **全部**映射失败 → 每一只检测到的手都被静默丢弃 →
+    真机实测 Vision 手部检出率 0%，用户看到"手完全不跟"。
+
+    解法：不再假设 key 的形式。模块常量（`V.VN...JointNameWrist`）的名字
+    是稳定的，值无论是全名还是缩写码，都建立 value→规范名 的映射；
+    `_canon` 查表失败再退回旧的全名后缀解析。两头都覆盖。
+    """
+    hand: Dict[str, str] = {}
+    body: Dict[str, str] = {}
+    for n in dir(_V):
+        if "HandPoseObservationJointName" in n and n != "VNHumanHandPoseObservationJointName":
+            canon = _HAND_MAP.get(_snake_lower(n.split("JointName", 1)[1]))
+            if canon:
+                hand[str(getattr(_V, n))] = canon
+                hand[str(getattr(_V, n)).lower()] = canon
+        elif "BodyPoseObservationJointName" in n and n != "VNHumanBodyPoseObservationJointName":
+            canon = _BODY_MAP.get(_snake_lower(n.split("JointName", 1)[1]))
+            if canon:
+                body[str(getattr(_V, n))] = canon
+                body[str(getattr(_V, n)).lower()] = canon
+    return hand, body
+
+
+def _snake_lower(s: str) -> str:
+    """'IndexMCP' → 'indexmcp'（_HAND_MAP 的 key 形式）。"""
+    return s.replace("_", "").replace(" ", "").lower()
+
+
+# 模块加载时构建一次（含 FourCharCode 缩写 → 规范名）
+_CODE_HAND, _CODE_BODY = _build_code_maps()
+
+
 def _canon(key, table: Dict[str, str]) -> Optional[str]:
-    s = str(key).lower()
+    """
+    关节 key → 规范名。三档查找，覆盖新旧系统的所有暴露形式：
+      1. 预构建的 code 表（FourCharCode / 全名常量的字符串值）；
+      2. key 是纯字符串全名（老系统路径）的后缀解析；
+      3. 枚举对象 str() 的正则兜底。
+    """
+    s = str(key)
+    # 1) code 表（大小写各查一次，构建时已双写）
+    hit = _CODE_HAND.get(s) or _CODE_BODY.get(s)
+    if hit and (table is _HAND_MAP or table is _BODY_MAP):
+        # 命中的是另一张表的 key 时会返回 None，下面继续走旧路径
+        want_hand = table is _HAND_MAP
+        hit_hand = s in _CODE_HAND
+        if hit_hand == want_hand:
+            return hit
+    # 2) 旧形式：全名字符串
+    low = s.lower()
     for prefix in ("vnhumanbodyposeobservationjointname",
                    "vnhumanhandposeobservationjointname"):
-        if prefix in s:
-            s = s.split(prefix, 1)[1]
-    s = s.replace("_", "").replace(" ", "")
-    return table.get(s)
+        if prefix in low:
+            low = low.split(prefix, 1)[1]
+            return table.get(low.replace("_", "").replace(" ", ""))
+    # 3) repr 兜底（枚举对象 '<Vision.VN...Wrist: 3>'）
+    import re as _re
+    m = _re.search(r"(VNHuman(?:Hand|Body)PoseObservationJointName[A-Za-z]+)", s)
+    if m:
+        low2 = m.group(1).lower().split("jointname", 1)[-1]
+        return table.get(low2.replace("_", "").replace(" ", ""))
+    return None
 
 
 def to_cgimage(bgr: np.ndarray):
