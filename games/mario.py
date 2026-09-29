@@ -151,7 +151,7 @@ class MarioGame(BaseGame):
         self.bricks_broken = set()
         self.flag = 0.0
         self.win_t = 0.0
-        self._sky = (SCN.sky_img(LEVEL_W + 240, C.DESIGN_H, "sky_day", tile_x=True)
+        self._sky = (SCN.sky_img(LEVEL_W + 240, C.DESIGN_H, "bg_bev_game", tile_x=True)
                      or SCN.sky(C.DESIGN_W, C.DESIGN_H, SKY_TOP,
                                 (120, 184, 236), SKY_BOT))
         # 云的数量与尺寸都要克制：26 朵 × 最大 1.35 倍会在天上连成一片"云墙"，

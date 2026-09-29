@@ -75,7 +75,7 @@ class BalloonGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_dusk", W, H, (52, 40, 74), (96, 76, 118), (54, 44, 72))
+        SCN.sky_or(s, "bg_bev_mist", W, H, (52, 40, 74), (96, 76, 118), (54, 44, 72))
         # 竹影
         rng = random.Random(6)
         for _ in range(26):

@@ -84,7 +84,7 @@ class SliceGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_teahouse", W, H, (34, 40, 56), (58, 68, 92), (30, 34, 48))
+        SCN.sky_or(s, "bg_bev_game", W, H, (34, 40, 56), (58, 68, 92), (30, 34, 48))
         # 案板
         s.blit(A.shade_panel(W, 180, (128, 92, 62), 0, 1.1, 0.7), (0, FLOOR))
         rng = random.Random(11)

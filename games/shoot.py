@@ -75,7 +75,7 @@ class ShootGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_day", W, H, (58, 82, 106), (108, 146, 168), (60, 88, 72))
+        SCN.sky_or(s, "bg_bev_game", W, H, (58, 82, 106), (108, 146, 168), (60, 88, 72))
         rng = random.Random(13)
         # 远山
         for _ in range(10):

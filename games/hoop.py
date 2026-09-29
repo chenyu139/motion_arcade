@@ -20,6 +20,7 @@ import pygame
 from core import art as A
 from core import theme as U
 from core import sprites as SP
+from core import scene as SCN
 from core.base import BaseGame, register
 from core.inputs import GameInput
 
@@ -75,7 +76,7 @@ class HoopGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        s.blit(U.vgrad3(W, H, (26, 30, 52), (52, 58, 88), (34, 38, 60)), (0, 0))
+        SCN.sky_or(s, "bg_bev_mist", W, H, (26, 30, 52), (52, 58, 88), (34, 38, 60))
         # 观众背景
         s.blit(A.crowd_stand(W, 300, seed=21, rows=7, lit=-0.16), (0, 118))
         # 球场

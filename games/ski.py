@@ -73,7 +73,7 @@ class SkiGame(BaseGame):
     def _build_bg(self):
         W, H = self.W, self.H
         # 注意 .copy()：grad 返回的是缓存表面，直接改写会污染全局缓存
-        self._bg = (SCN.sky_img(W, H, "sky_day")
+        self._bg = (SCN.sky_img(W, H, "bg_bev_mountain")
                     or U.vgrad3(W, H, (86, 140, 198), (176, 208, 236),
                                 (238, 244, 252))).copy()
         # 远山

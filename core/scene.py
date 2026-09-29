@@ -72,13 +72,21 @@ def sky_img(w: int, h: int, name: str, tile_x: bool = False) -> Optional[pygame.
         print(f"[scene] 载入天空 {name} 失败：{e}")
         _SKY_CACHE[key] = None
         return None
-    base = pygame.transform.smoothscale(raw, (1920, h))
+    # cover：等比缩放填满 (w, h) 并居中裁剪，避免宽幅背景被横向拉变形
+    sw, sh = raw.get_size()
+    scale = max(w / sw, h / sh)
+    nw, nh = int(round(sw * scale)), int(round(sh * scale))
+    scaled = pygame.transform.smoothscale(raw, (nw, nh))
     if tile_x:
         s = pygame.Surface((w, h))
-        for x in range(0, w, base.get_width()):
-            s.blit(base, (x, 0))
+        step = scaled.get_width()
+        for x in range(0, w, step):
+            s.blit(scaled, (x, 0))
     else:
-        s = pygame.transform.smoothscale(raw, (w, h)) if (w, h) != (1920, h) else base
+        if nw == w and nh == h:
+            s = scaled
+        else:
+            s = scaled.subsurface(((nw - w) // 2, (nh - h) // 2, w, h)).copy()
     if len(_SKY_CACHE) > 24:
         _SKY_CACHE.clear()
     _SKY_CACHE[key] = s

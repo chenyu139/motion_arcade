@@ -78,7 +78,7 @@ class FishingGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_day", W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238))
+        SCN.sky_or(s, "bg_bev_beach", W, H, (96, 148, 186), (160, 200, 224), (206, 226, 238))
         rng = random.Random(5)
         # 都江堰 / 乐山大佛 / 三星堆 —— 岷江两岸的四川地标
         # 注意这里必须画到局部变量 s 上：_make_bg 还没返回，self._bg 尚不存在

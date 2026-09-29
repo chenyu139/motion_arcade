@@ -94,7 +94,7 @@ class Menu:
         """
         W, H = C.DESIGN_W, C.DESIGN_H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_dusk", W, H, (22, 20, 54), (62, 48, 108), (188, 122, 106))
+        SCN.sky_or(s, "bg_bev_mist", W, H, (22, 20, 54), (62, 48, 108), (188, 122, 106))
         # 地平线余晖：暖色低垂的太阳，"夕照"最省事的说法
         SCN.sun(s, W * 0.74, H * 0.66, 84, (255, 190, 134))
         self.stars.draw(s, 0.0)

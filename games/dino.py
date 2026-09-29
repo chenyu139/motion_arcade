@@ -72,7 +72,7 @@ class DinoGame(BaseGame):
     def _make_bg(self) -> pygame.Surface:
         W, H = self.W, self.H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "sky_dusk", W, H, (44, 24, 14), (128, 74, 30), (206, 148, 66))
+        SCN.sky_or(s, "bg_bev_mist", W, H, (44, 24, 14), (128, 74, 30), (206, 148, 66))
         # 巨大的太阳轮（背景）
         cx, cy = W * 0.72, self.TOP + 300
         for i in range(7):
