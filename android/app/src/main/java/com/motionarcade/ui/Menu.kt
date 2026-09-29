@@ -37,6 +37,9 @@ class Menu(private val bg: BackgroundManager) {
     /** 供外壳判断"玩家确认进入某一款"了。 */
     var onEnter: ((BaseGame) -> Unit)? = null
 
+    /** 高亮移动（换了一款）时通知，用于播"嗒"的音效。 */
+    var onMove: (() -> Unit)? = null
+
     fun attach(list: List<BaseGame>) {
         games = list
         selected = 0
@@ -83,6 +86,7 @@ class Menu(private val bg: BackgroundManager) {
                 } else {
                     (selected - 1 + games.size) % games.size
                 }
+                onMove?.invoke()
             }
         } else if (abs(axis) < 0.18f) {
             axisLatch = false

@@ -2,6 +2,7 @@ package com.motionarcade.game.games
 
 import com.motionarcade.game.BaseGame
 import com.motionarcade.game.Design
+import com.motionarcade.game.HudItem
 import com.motionarcade.render.BackgroundManager
 import com.motionarcade.render.Canvas2D
 import com.motionarcade.render.Col
@@ -246,12 +247,12 @@ class SkiGame(
         d.roundRect(px - 46f, py + 76f, 92f, 12f, 6f, Col.rgb(240, 120, 60))
 
         particles.draw(d)
-
-        // ---- HUD ----
-        d.text("${dist.toInt()}m / $GOAL_M", 40f, 56f, 34f, Col.rgb(200, 234, 255), bold = true)
-        d.text("旗门 $scoreGates", 40f, 92f, 26f, Col.rgb(226, 232, 240))
-        d.text("${left.toInt()}s", Design.W - 40f, 56f, 34f,
-            if (left < 10f) Col.rgb(255, 120, 100) else Col.rgb(226, 232, 240), align = "right")
-        d.text("生命 $lives", Design.W - 40f, 92f, 24f, Col.rgb(226, 232, 240), align = "right")
     }
+
+    override fun hudItems(): List<HudItem> = listOf(
+        HudItem("距离", "${dist.toInt()}m", Col.rgb(200, 234, 255)),
+        HudItem("旗门", "$scoreGates", Col.rgb(255, 226, 140)),
+        HudItem("生命", "$lives", Col.rgb(255, 140, 120), icon = "heart"),
+        HudItem("时间", "${maxOf(0f, left).toInt()}", Col.rgb(226, 232, 240)),
+    )
 }

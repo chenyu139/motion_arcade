@@ -54,6 +54,9 @@ class VisionPipeline(
     /** 游戏每帧读它。同一个对象复用，避免 60fps 下产生垃圾。 */
     val input = GameInput()
 
+    /** 最近一帧缩略图（HUD 预览面板用）；相机未启动时为 null。 */
+    val lastFrame: android.graphics.Bitmap? get() = camera?.lastFrame
+
     private val hub = LandmarkerHub(context)
     private var camera: CameraManager? = null
     private var channels: Set<InputChannel> = emptySet()
@@ -164,7 +167,8 @@ class VisionPipeline(
             val ts = SystemClock.uptimeMillis().coerceAtLeast(lastTs + 1)
             lastTs = ts
             val bitmap = proxy.toBitmap()
-            hub.detectAsync(bitmap, proxy.imageInfo.rotationDegrees, ts)
+            camera?.updateLastFrame(bitmap)
+            hub.detectAsync(channels, bitmap, proxy.imageInfo.rotationDegrees, ts)
         } catch (e: Exception) {
             Log.w(TAG, "frame failed", e)
         } finally {

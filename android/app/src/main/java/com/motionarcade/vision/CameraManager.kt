@@ -43,6 +43,36 @@ class CameraManager(
     private var provider: ProcessCameraProvider? = null
     private val bound = AtomicBoolean(false)
 
+    // ---- 预览缩略图：双缓冲 ----
+    //
+    // 踩过的坑：最初是每帧 createScaledBitmap 一张新的、并把上一张 recycle() 掉，
+    // 结果渲染线程正拿着旧 Bitmap 绘制时相机线程把它回收了 —— 直接崩
+    // "Canvas: trying to use a recycled bitmap"。
+    // 所以改成两块固定 Bitmap 轮换：相机写其中一块、渲染读另一块，切换靠 Volatile 索引。
+    // 既不分配也不回收，最坏情况只是某一帧预览轻微撕裂（预览面板而已，可接受）。
+    private val thumbW = 300
+    private val thumbH = 240
+    private val thumbBuf = arrayOf(
+        android.graphics.Bitmap.createBitmap(thumbW, thumbH, android.graphics.Bitmap.Config.ARGB_8888),
+        android.graphics.Bitmap.createBitmap(thumbW, thumbH, android.graphics.Bitmap.Config.ARGB_8888)
+    )
+    private val thumbCanvas = arrayOf(
+        android.graphics.Canvas(thumbBuf[0]),
+        android.graphics.Canvas(thumbBuf[1])
+    )
+    private val thumbDst = android.graphics.RectF(0f, 0f, thumbW.toFloat(), thumbH.toFloat())
+    @Volatile
+    private var thumbRead = 0
+
+    /** 最近一帧缩略图（HUD 预览面板用）。 */
+    val lastFrame: android.graphics.Bitmap get() = thumbBuf[thumbRead]
+
+    fun updateLastFrame(src: android.graphics.Bitmap) {
+        val w = 1 - thumbRead
+        thumbCanvas[w].drawBitmap(src, null, thumbDst, null)
+        thumbRead = w
+    }
+
     @SuppressLint("UnsafeOptInUsageError")
     fun start() {
         if (bound.getAndSet(true)) return

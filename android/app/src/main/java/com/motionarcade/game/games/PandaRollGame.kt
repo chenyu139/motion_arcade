@@ -2,6 +2,7 @@ package com.motionarcade.game.games
 
 import com.motionarcade.game.BaseGame
 import com.motionarcade.game.Design
+import com.motionarcade.game.HudItem
 import com.motionarcade.render.Canvas2D
 import com.motionarcade.render.Col
 import com.motionarcade.render.SpriteManager
@@ -244,10 +245,11 @@ class PandaRollGame(private val sprites: SpriteManager) : BaseGame() {
         }
 
         particles.draw(d)
-
-        // ---- HUD ----
-        d.text("距离 ${mScore}m / $TARGET_M", 40f, 56f, 34f, Col.rgb(180, 240, 220), bold = true)
-        d.text("竹笋 $bamboo", 40f, 92f, 26f, Col.rgb(226, 232, 240))
-        d.text("生命 $lives", Design.W - 40f, 56f, 32f, Col.rgb(255, 140, 120), align = "right")
     }
+
+    override fun hudItems(): List<HudItem> = listOf(
+        HudItem("距离", "${mScore}m", Col.rgb(180, 240, 220)),
+        HudItem("竹笋", "$bamboo", Col.rgb(226, 232, 240)),
+        HudItem("生命", "$lives", Col.rgb(255, 140, 120), icon = "heart"),
+    )
 }

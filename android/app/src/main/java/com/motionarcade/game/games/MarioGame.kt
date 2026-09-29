@@ -2,6 +2,7 @@ package com.motionarcade.game.games
 
 import com.motionarcade.game.BaseGame
 import com.motionarcade.game.Design
+import com.motionarcade.game.HudItem
 import com.motionarcade.render.BackgroundManager
 import com.motionarcade.render.Canvas2D
 import com.motionarcade.render.Col
@@ -345,13 +346,14 @@ class MarioGame(
         }
 
         particles.draw(d)
-
-        // ---- HUD ----
-        d.text("金币 $coinCount", 40f, 56f, 34f, Col.rgb(255, 226, 140), bold = true)
-        d.text("时间 ${timeLeft.toInt()}", 40f, 92f, 26f, Col.rgb(226, 232, 240))
-        d.text("进度 ${((px / GOAL_X) * 100).toInt()}%", Design.W - 40f, 56f, 30f,
-            Col.rgb(226, 232, 240), align = "right")
+        // 顶部 HUD 由外壳统一绘制（见 Hud.kt），这里不再自己画，避免与浮层重叠。
     }
+
+    override fun hudItems(): List<HudItem> = listOf(
+        HudItem("金币", "$coinCount", Col.rgb(255, 226, 140)),
+        HudItem("进度", "${((px / GOAL_X) * 100).toInt().coerceIn(0, 100)}%", Col.rgb(126, 231, 135)),
+        HudItem("时间", "${maxOf(0f, timeLeft).toInt()}", Col.rgb(226, 232, 240)),
+    )
 
     private fun drawHills(d: Canvas2D) {
         val shift = (camX * 0.25f) % 900f

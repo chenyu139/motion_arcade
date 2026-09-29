@@ -11,8 +11,10 @@ import android.view.SurfaceView
 import androidx.lifecycle.LifecycleOwner
 import com.motionarcade.render.BackgroundManager
 import com.motionarcade.render.Canvas2D
+import com.motionarcade.audio.Sfx
 import com.motionarcade.render.Col
 import com.motionarcade.render.SpriteManager
+import com.motionarcade.ui.Hud
 import com.motionarcade.ui.Menu
 import com.motionarcade.vision.GameInput
 import com.motionarcade.vision.InputChannel
@@ -54,6 +56,7 @@ class GameSurfaceView(
     private val registry = GameRegistry(sprites, bg)
     private val menu = Menu(bg)
     private val pipeline = VisionPipeline(context, lifecycleOwner)
+    private val hud = Hud()
 
     private var scene = "menu"               // menu | game | result
     private var current: BaseGame? = null
@@ -80,6 +83,11 @@ class GameSurfaceView(
         registry.preload()
         menu.attach(registry.entries)
         menu.onEnter = { game -> enterGame(game) }
+        menu.onMove = { Sfx.play("move") }
+        // HUD 数值增加 → 得分音；减少（掉命/扣分）→ 失误音
+        hud.onValueChange = { _, grew ->
+            if (grew) Sfx.play("hit") else Sfx.play("fail")
+        }
     }
 
     // ------------------------------------------------------------------ 生命周期
@@ -125,9 +133,11 @@ class GameSurfaceView(
         game.reset()
         scene = "game"
         resultT = 0f
+        hud.reset()
         // 按需启停检测器：头控游戏不必跑手部模型
         pipeline.retune(game.requires)
         pipeline.reset()
+        Sfx.play("start")
         Log.i(TAG, "enter ${game.key} requires=${game.requires}")
     }
 
@@ -184,6 +194,7 @@ class GameSurfaceView(
         // 视觉管线始终更新（菜单里也要能用头选）
         if (hasCameraPermission) pipeline.update(dt)
         val inp: GameInput = pipeline.input
+        hud.update(dt)
 
         when (scene) {
             "menu" -> menu.update(dt, inp)
@@ -195,6 +206,7 @@ class GameSurfaceView(
                     scene = "result"
                     resultWin = g.state == BaseGame.STATE_WIN
                     resultT = 0f
+                    Sfx.play(if (resultWin) "celebrate" else "fail")
                 }
             }
             "result" -> {
@@ -219,9 +231,19 @@ class GameSurfaceView(
 
         when (scene) {
             "menu" -> menu.draw(d)
-            "game" -> current?.render(d)
+            "game" -> {
+                current?.render(d)
+                current?.let {
+                    hud.draw(d, it, pipeline.input, pipeline.lastFrame,
+                        hasCameraPermission, smoothedFps)
+                }
+            }
             "result" -> {
                 current?.render(d)
+                current?.let {
+                    hud.draw(d, it, pipeline.input, pipeline.lastFrame,
+                        hasCameraPermission, smoothedFps)
+                }
                 drawResult(d)
             }
         }

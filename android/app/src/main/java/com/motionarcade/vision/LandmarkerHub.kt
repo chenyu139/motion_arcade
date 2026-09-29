@@ -2,6 +2,7 @@ package com.motionarcade.vision
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Build
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
@@ -16,6 +17,7 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * MediaPipe Tasks Vision 的封装：姿态(33) / 手(21) / 脸(468)。
@@ -24,12 +26,14 @@ import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
  * --------
  * 1. **按需创建、用完即释放**。三个模型同时常驻会吃掉大量内存与算力，
  *    而每个游戏只用到其中一部分（头控游戏不需要手/姿态，手控游戏不需要姿态）。
- *    [ensure] / [release] 让管线按游戏声明的通道动态装卸。
- * 2. **GPU 优先、CPU 兜底**。GPU delegate 在部分设备上初始化会失败
- *    （驱动/上下文问题），失败就退到 CPU，保证功能可用而不是直接崩。
- * 3. **LIVE_STREAM + 单调时间戳**。这是流式推理模式，MediaPipe 要求
- *    timestampMs 严格递增；调用方必须在**同一个线程**里顺序提交（本项目
- *    用 CameraX 的单线程 analyzer executor，天然满足）。
+ * 2. **GPU 优先，失败自动退 CPU —— 而且是运行时降级**。
+ *    这一点踩过坑：GPU delegate 在**创建时**可能成功，但**推理时**才炸
+ *    （例如模拟器的软件 GL 缺少 `glGetBufferParameteri64v`，报 GL_INVALID_ENUM）。
+ *    只在创建时 try/catch 兜不住这种情况，必须在 errorListener 里标记失败，
+ *    再于下一次 detectAsync（相机线程）重建为 CPU —— 重建必须和推理同一线程，
+ *    否则 MediaPipe 会直接崩。
+ * 3. **LIVE_STREAM + 单调时间戳**：MediaPipe 要求 timestampMs 严格递增，
+ *    调用方必须在同一线程顺序提交（本项目的 CameraX 用单线程 executor，天然满足）。
  */
 class LandmarkerHub(private val context: Context) {
 
@@ -53,9 +57,43 @@ class LandmarkerHub(private val context: Context) {
     private var hand: HandLandmarker? = null
     private var face: FaceLandmarker? = null
 
-    private val poseFailed = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val handFailed = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val faceFailed = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val poseFailed = AtomicBoolean(false)
+    private val handFailed = AtomicBoolean(false)
+    private val faceFailed = AtomicBoolean(false)
+
+    /** GPU 推理失败 → 置位，下次 detectAsync 前整体重建为 CPU。 */
+    private val gpuBroken = AtomicBoolean(false)
+    /** 当前实际使用的 delegate（降级后为 true）。 */
+    @Volatile
+    private var usingCpu = false
+
+    /** 当前是否在用 CPU（供诊断显示）。 */
+    val cpuMode: Boolean get() = usingCpu
+
+    init {
+        // 模拟器的 GPU 基本不可靠（swiftshader 缺少 glGetBufferParameteri64v 等，
+        // 会让 GPU delegate 在推理阶段每帧报 GL_INVALID_ENUM）。
+        // 而且这种失败**既不抛异常、也不走 errorListener**，只在内部线程打日志，
+        // 从调用侧根本探测不到 —— 所以模拟器直接走 CPU，别去赌它的 GL。
+        if (isEmulator()) {
+            usingCpu = true
+            Log.i(TAG, "emulator detected → 直接使用 CPU delegate")
+        }
+    }
+
+    private fun isEmulator(): Boolean =
+        Build.FINGERPRINT.startsWith("generic") ||
+            Build.FINGERPRINT.startsWith("unknown") ||
+            Build.MODEL.contains("google_sdk") ||
+            Build.MODEL.contains("Emulator") ||
+            Build.MODEL.contains("Android SDK built for") ||
+            Build.MANUFACTURER.contains("Genymotion") ||
+            Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic") ||
+            Build.PRODUCT == "google_sdk" ||
+            Build.PRODUCT.contains("sdk_gphone") ||
+            System.getProperty("ro.kernel.qemu") == "1" ||
+            Build.HARDWARE.contains("goldfish") ||
+            Build.HARDWARE.contains("ranchu")
 
     // ------------------------------------------------------------------ 生命周期
 
@@ -75,6 +113,19 @@ class LandmarkerHub(private val context: Context) {
         releasePose(); releaseHand(); releaseFace()
     }
 
+    private fun onTaskError(which: String, e: Exception) {
+        val msg = e.message.orEmpty()
+        // GPU delegate 在部分设备/模拟器上会在推理阶段才失败（GL_INVALID_ENUM 等）
+        if (!usingCpu && (msg.contains("GL_", true) || msg.contains("gpu", true) ||
+                msg.contains("delegate", true))
+        ) {
+            Log.w(TAG, "$which: GPU 推理失败，将降级为 CPU —— $msg")
+            gpuBroken.set(true)
+        } else {
+            Log.e(TAG, "$which error", e)
+        }
+    }
+
     private fun ensurePose() {
         if (pose != null || poseFailed.get()) return
         pose = try {
@@ -88,26 +139,21 @@ class LandmarkerHub(private val context: Context) {
                 .setResultListener { result: PoseLandmarkerResult, _: MPImage ->
                     onPose?.invoke(toPoseFrame(result), System.currentTimeMillis())
                 }
-                .setErrorListener { e -> Log.e(TAG, "pose error", e) }
+                .setErrorListener { e -> onTaskError("pose", e) }
                 .build()
             PoseLandmarker.createFromOptions(context, opts).also {
-                Log.i(TAG, "pose landmarker ready")
+                Log.i(TAG, "pose landmarker ready (${if (usingCpu) "CPU" else "GPU"})")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "pose init failed, falling back to CPU", e)
-            try {
-                val opts = PoseLandmarker.PoseLandmarkerOptions.builder()
-                    .setBaseOptions(baseOptions(POSE_MODEL, gpu = false))
-                    .setRunningMode(RunningMode.LIVE_STREAM)
-                    .setNumPoses(1)
-                    .setResultListener { result: PoseLandmarkerResult, _: MPImage ->
-                        onPose?.invoke(toPoseFrame(result), System.currentTimeMillis())
-                    }
-                    .build()
-                PoseLandmarker.createFromOptions(context, opts)
-            } catch (e2: Exception) {
+            // 创建阶段就失败：直接退 CPU 再试一次
+            if (!usingCpu) {
+                Log.w(TAG, "pose init failed on GPU, retry CPU", e)
+                usingCpu = true
+                ensurePose()
+                null
+            } else {
                 poseFailed.set(true)
-                Log.e(TAG, "pose unavailable", e2)
+                Log.e(TAG, "pose unavailable", e)
                 null
             }
         }
@@ -126,15 +172,22 @@ class LandmarkerHub(private val context: Context) {
                 .setResultListener { result: HandLandmarkerResult, _: MPImage ->
                     onHands?.invoke(toHandStates(result), System.currentTimeMillis())
                 }
-                .setErrorListener { e -> Log.e(TAG, "hand error", e) }
+                .setErrorListener { e -> onTaskError("hand", e) }
                 .build()
             HandLandmarker.createFromOptions(context, opts).also {
-                Log.i(TAG, "hand landmarker ready")
+                Log.i(TAG, "hand landmarker ready (${if (usingCpu) "CPU" else "GPU"})")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "hand init failed", e)
-            handFailed.set(true)
-            null
+            if (!usingCpu) {
+                Log.w(TAG, "hand init failed on GPU, retry CPU", e)
+                usingCpu = true
+                ensureHand()
+                null
+            } else {
+                handFailed.set(true)
+                Log.e(TAG, "hand unavailable", e)
+                null
+            }
         }
     }
 
@@ -151,55 +204,94 @@ class LandmarkerHub(private val context: Context) {
                 .setResultListener { result: FaceLandmarkerResult, _: MPImage ->
                     onFace?.invoke(toFaceJoints(result), System.currentTimeMillis())
                 }
-                .setErrorListener { e -> Log.e(TAG, "face error", e) }
+                .setErrorListener { e -> onTaskError("face", e) }
                 .build()
             FaceLandmarker.createFromOptions(context, opts).also {
-                Log.i(TAG, "face landmarker ready")
+                Log.i(TAG, "face landmarker ready (${if (usingCpu) "CPU" else "GPU"})")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "face init failed", e)
-            faceFailed.set(true)
-            null
+            if (!usingCpu) {
+                Log.w(TAG, "face init failed on GPU, retry CPU", e)
+                usingCpu = true
+                ensureFace()
+                null
+            } else {
+                faceFailed.set(true)
+                Log.e(TAG, "face unavailable", e)
+                null
+            }
         }
     }
 
-    private fun baseOptions(model: String, gpu: Boolean = true): BaseOptions =
+    private fun baseOptions(model: String): BaseOptions =
         BaseOptions.builder()
             .setModelAssetPath(model)
-            .setDelegate(if (gpu) Delegate.GPU else Delegate.CPU)
+            .setDelegate(if (usingCpu) Delegate.CPU else Delegate.GPU)
             .build()
 
     private fun releasePose() { pose?.close(); pose = null }
     private fun releaseHand() { hand?.close(); hand = null }
     private fun releaseFace() { face?.close(); face = null }
 
+    /**
+     * GPU 推理失败后的整体重建（必须在推理线程调用）。
+     * 复位失败标志，让 ensure* 能重新创建。
+     */
+    private fun rebuildWithCpu(channels: Set<InputChannel>) {
+        Log.w(TAG, "rebuilding all landmarkers on CPU")
+        releaseAll()
+        poseFailed.set(false); handFailed.set(false); faceFailed.set(false)
+        usingCpu = true
+        gpuBroken.set(false)
+        ensure(channels)
+    }
+
     // ------------------------------------------------------------------ 推理
 
     /** 提交一帧；只跑当前已装载的检测器。 */
-    fun detectAsync(bitmap: Bitmap, rotationDegrees: Int, timestampMs: Long) {
+    fun detectAsync(channels: Set<InputChannel>, bitmap: Bitmap,
+                    rotationDegrees: Int, timestampMs: Long) {
+        // GPU 挂了就在这里（推理线程）重建为 CPU —— 不能在其他线程直接重建
+        if (gpuBroken.get() && !usingCpu) {
+            rebuildWithCpu(channels)
+            return                       // 本帧丢弃，重建后再开始推理
+        }
+        if (gpuBroken.get()) gpuBroken.set(false)
+
         val mp = BitmapImageBuilder(bitmap).build()
         val opts = ImageProcessingOptions.builder()
             .setRotationDegrees(rotationDegrees)
             .build()
-        pose?.detectAsync(mp, opts, timestampMs)
-        hand?.detectAsync(mp, opts, timestampMs)
-        face?.detectAsync(mp, opts, timestampMs)
+        try {
+            pose?.detectAsync(mp, opts, timestampMs)
+            hand?.detectAsync(mp, opts, timestampMs)
+            face?.detectAsync(mp, opts, timestampMs)
+        } catch (e: Exception) {
+            // 注意：GPU delegate 的失败很多时候是**同步抛出**的（Graph has errors /
+            // GL_INVALID_ENUM），不会走 errorListener，所以必须在这里兜住。
+            val msg = e.message.orEmpty()
+            if (!usingCpu && (msg.contains("GL_", true) || msg.contains("gpu", true) ||
+                    msg.contains("Graph has errors", true))
+            ) {
+                Log.w(TAG, "GPU 推理异常，下一帧降级为 CPU: ${msg.take(120)}")
+                gpuBroken.set(true)
+            } else {
+                Log.w(TAG, "detect failed", e)
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 结果转换
 
     /**
      * 把 MediaPipe landmark 转成 [Joint]。
-     * 防御性处理：如果拿到的是像素坐标（>1.5），按图像宽高归一化，
+     * 防御性处理：如果拿到的是像素坐标（>1.5），按最大绝对值归一，
      * 避免不同后端/版本坐标语义不一致导致整个控制链路量纲错乱。
      */
     private fun norm(list: List<NormalizedLandmark>): List<Joint> {
         if (list.isEmpty()) return emptyList()
         val maxAbs = list.maxOf { kotlin.math.abs(it.x()).coerceAtLeast(kotlin.math.abs(it.y())) }
-        val k = if (maxAbs > NORMALIZED_MAX) {
-            // 像素坐标：用第一个点所在图像尺寸换算不可靠，这里用经验上限归一
-            1f / maxAbs * NORMALIZED_MAX
-        } else 1f
+        val k = if (maxAbs > NORMALIZED_MAX) 1f / maxAbs * NORMALIZED_MAX else 1f
         return list.map {
             Joint(it.x() * k, it.y() * k, it.visibility().orElse(1f))
         }

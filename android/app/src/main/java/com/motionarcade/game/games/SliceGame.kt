@@ -2,6 +2,7 @@ package com.motionarcade.game.games
 
 import com.motionarcade.game.BaseGame
 import com.motionarcade.game.Design
+import com.motionarcade.game.HudItem
 import com.motionarcade.render.BackgroundManager
 import com.motionarcade.render.Canvas2D
 import com.motionarcade.render.Col
@@ -254,12 +255,12 @@ class SliceGame(
         }
 
         particles.draw(d)
-
-        // HUD
-        d.text("$mScore / $GOAL", 40f, 56f, 34f, Col.rgb(255, 226, 150), bold = true)
-        d.text("连击 $combo　最高 $bestCombo", 40f, 92f, 26f, Col.rgb(226, 232, 240))
-        d.text("${left.toInt()}s", Design.W - 40f, 56f, 34f,
-            if (left < 10f) Col.rgb(255, 120, 100) else Col.rgb(226, 232, 240), align = "right")
-        d.text("生命 $lives", Design.W - 40f, 92f, 24f, Col.rgb(255, 140, 120), align = "right")
     }
+
+    override fun hudItems(): List<HudItem> = listOf(
+        HudItem("得分", "$mScore", Col.rgb(255, 226, 150)),
+        HudItem("连击", "$combo", Col.rgb(126, 231, 135)),
+        HudItem("生命", "$lives", Col.rgb(255, 140, 120), icon = "heart"),
+        HudItem("时间", "${maxOf(0f, left).toInt()}", Col.rgb(226, 232, 240)),
+    )
 }

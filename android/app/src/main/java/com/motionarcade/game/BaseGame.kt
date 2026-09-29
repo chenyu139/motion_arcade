@@ -93,6 +93,17 @@ class Particles(cap: Int = 400) {
 }
 
 /**
+ * HUD 上的一张状态卡：小标签 + 大数值（+ 可选图标）。
+ * 对应 Python 端 `BaseGame.hud_items()` 返回的三/四元组。
+ */
+data class HudItem(
+    val label: String,
+    val value: String,
+    val color: Int,
+    val icon: String = "",       // "heart" 画心形，其余走通用卡
+)
+
+/**
  * 所有小游戏的基类（对应 Python 端 `core/base.BaseGame`）。
  *
  * 子类只实现三件事：[reset] / [update] / [draw]，其余（HUD、暂停、结算、
@@ -127,6 +138,12 @@ abstract class BaseGame {
 
     /** 得分（子类自己维护，这里给外壳读取用于结算）。 */
     open val score: Int get() = 0
+
+    /**
+     * HUD 中间要显示哪些数值。子类返回自己的 [HudItem] 列表；
+     * 数值变化时 HUD 会自动"弹一下"（最便宜也最有效的操作反馈）。
+     */
+    open fun hudItems(): List<HudItem> = emptyList()
 
     companion object {
         const val STATE_PLAY = "play"

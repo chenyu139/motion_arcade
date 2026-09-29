@@ -2,6 +2,7 @@ package com.motionarcade.game.games
 
 import com.motionarcade.game.BaseGame
 import com.motionarcade.game.Design
+import com.motionarcade.game.HudItem
 import com.motionarcade.render.BackgroundManager
 import com.motionarcade.render.Canvas2D
 import com.motionarcade.render.Col
@@ -223,11 +224,6 @@ class HoopGame(
 
         particles.draw(d)
 
-        // HUD
-        d.text("命中 $goals / 第 ${(shotI + 1).coerceAtMost(SHOTS)} 投", 40f, 56f, 34f,
-            Col.rgb(255, 214, 140), bold = true)
-        d.text("目标 $WIN 命中　空心 $swish", 40f, 92f, 26f, Col.rgb(226, 232, 240))
-        d.text("得分 $mScore", Design.W - 40f, 56f, 30f, Col.rgb(226, 232, 240), align = "right")
         if (lastMsg.isNotEmpty()) {
             d.text(lastMsg, Design.W / 2, Design.TOP + 120f, 46f, Col.rgb(255, 226, 150),
                 align = "center", bold = true)
@@ -237,4 +233,11 @@ class HoopGame(
                 Design.BOT - 40f, 28f, Col.rgb(200, 210, 226), align = "center")
         }
     }
+
+    override fun hudItems(): List<HudItem> = listOf(
+        HudItem("命中", "$goals / $WIN", Col.rgb(255, 214, 140)),
+        HudItem("第", "${(shotI + 1).coerceAtMost(SHOTS)}/$SHOTS", Col.rgb(226, 232, 240)),
+        HudItem("空心", "$swish", Col.rgb(126, 231, 135)),
+        HudItem("得分", "$mScore", accent),
+    )
 }
