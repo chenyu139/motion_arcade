@@ -883,20 +883,19 @@ class MotionTracker:
                                           self.backend_name + "+" + vf.source)
 
             hands = [self._hand_state(h) for h in vf.hands]
-            # ---- 手部兜底 ----
-            # Apple Vision 的手部精度高（21 点），但它对分辨率、光照、手部姿态
-            # 都有要求。原来它一旦给不出结果就**完全没有后备** ——
-            # HandBackendSkin（肤色 + 轮廓，不需要任何模型文件）其实早已实现，
-            # 却从来没被接进 MotionTracker，于是手部游戏直接不可玩。
+            # ---- 手部来源分层（第二版核心约束：skin 永不与 Vision 同帧竞争）----
+            # 第一版让 skin 与 Vision 的手进入同一个候选列表，结果肤色误检块
+            # （脖子/窗帘/木桌，面积常大于真手）抢走主手且真手永远夺不回 ——
+            # 这是"完全不跟"的根因。现在分层：
+            #   · Vision 有手 → 只用 Vision 的（21 点，可信）；
+            #   · Vision 连续 HANDSKIN_AFTER 完全没有手 → 才递入 skin 的结果
+            #     作为降级坐标源；Vision 一恢复立即让位。
             if hands:
                 self._last_hand_t = time.time()
                 self._hand_src = "vision"
             elif (C.HANDSKIN_FALLBACK and self._skin is not None
                   and self._vision_mode in ("hand", "full")
                   and time.time() - self._last_hand_t > C.HANDSKIN_AFTER):
-                # 排除人脸用的框是按 DETECT_W 缩略图算出来的，而这里喂的是更高
-                # 分辨率的画面 —— 不换算的话要么排错区域、要么把脸当成手
-                # （脸同样是肤色）。这是兜底能用的前提。
                 fbox = None
                 if st.found and st.box is not None:
                     sx = vision_img.shape[1] / float(C.DETECT_W)
