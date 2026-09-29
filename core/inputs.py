@@ -279,6 +279,7 @@ class HeadController:
         self.progress = 0.0
         self._jump_t = 0.0             # 动作键已按住时长
         self._gap_t = 99.0             # 距上次松开时长
+        self._last_jump_sig = 0.0      # 最近一帧的抬头信号（_adapt 判意图用）
         self._prev_w = 0.0
         self._odd_t = 0.0              # "位移与尺度不自洽"已持续的时长
         # ---- 抗抖动状态 ----
@@ -488,6 +489,7 @@ class HeadController:
         # 那就是"没抬头也触发了动作"的来源。抬头是俯仰变化，位移不是。
         self._settled_t += dt          # 校准后开始计时（基线收敛速度用）
         self._update_jump(jump_sig, st, dt)
+        self._last_jump_sig = jump_sig          # _adapt 用来判"抬头意图"
         self._adapt(dt, st, a_move, a_yaw, yaw_raw, p_raw,
                     dx_face, dy_face)
 
@@ -673,6 +675,18 @@ class HeadController:
         k = 1.0 - math.exp(-dt / max(0.3, tau))
         ncx, ncy = self.neutral  # type: ignore[misc]
 
+        # 俯仰基线的"抬头意图"门（真机事故：第一次抬头容易、后续非常难触发）。
+        #
+        # 背景：按下动作键所需 p_raw(0.212) **小于** 俯仰自适应门限(0.30) ——
+        # 于是 0.21~0.30 这一段"能触发第一跳、却够不到门限"的抬头，
+        # 基线照样把它当休息位学走。玩家的体验就是：第一跳轻松，
+        # 第二跳要抬得更高，越玩越费劲。
+        # 现在用**意图**而不是**已按下**来冻结学习：jump_sig 明显非零
+        # （>意图门，取 JUMP_OFF 的幅度级）说明玩家正在抬头，
+        # 这一段的俯仰绝不是休息位。配合下面的冷却时间，
+        # "抬一下 → 松开 → 再抬"的连续动作全程不会被学。
+        intent_on = abs(getattr(self, "_last_jump_sig", 0.0)) > C.JUMP_INTENT_TH
+
         # 横向平移：位置与脸宽一起跟随
         if abs(dx_face) < C.NEUTRAL_ADAPT_GATE:
             ncx += k * (st.cx - ncx)
@@ -688,8 +702,9 @@ class HeadController:
         if abs(dy_face) < C.NEUTRAL_ADAPT_GATE:
             ncy += k * (st.cy - ncy)
             self.nh += k * (st.h - self.nh)
-        # 俯仰
-        if st.pose_ok and abs(p_raw) < C.NEUTRAL_ADAPT_GATE_P:
+        # 俯仰。⚠ 抬头意图期间不学（见函数头的"意图门"说明）——
+        # 这正是"第一次容易、后续非常难"的根因修复处。
+        if st.pose_ok and abs(p_raw) < C.NEUTRAL_ADAPT_GATE_P and not intent_on:
             self.npitch += k * (st.pitch - self.npitch)
 
         self.neutral = (ncx, ncy)

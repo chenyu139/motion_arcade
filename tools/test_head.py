@@ -735,7 +735,42 @@ def test_held_look_up_not_learned() -> None:
           hc2.npitch > 0.05, f"{hc2.npitch:+.3f}")
 
 
-def test_config_refs() -> None:
+def test_repeated_jump_same_effort() -> None:
+    """
+    **真机症状回归：第一次抬头容易，后续非常难触发。**
+
+    根因：按下动作键所需 p_raw(≈0.21) **小于** 俯仰自适应门限(0.30) ——
+    于是 0.21~0.30 这段"能触发第一跳、却不够门限"的抬头会被基线当休息位
+    学走，第二跳要抬得更高，越玩越费劲。
+    修复：_adapt 里加"抬头意图门"（jump_sig > JUMP_INTENT_TH 期间不学俯仰）。
+    这里断言：**固定幅度的抬头，连续三次的触发结果必须一致**，
+    且基线不得漂移；同时反向断言无意图的噪声级偏置仍要被吸收。
+    """
+    print("\n[24] 连续抬头：每次所需努力不得递增（意图门回归）")
+    amp = C.PITCH_DEADZONE + (C.JUMP_ON + 0.05) * (C.PITCH_FULL_SCALE - C.PITCH_DEADZONE)
+    hc = calibrated()
+    fires, bases = [], []
+    for n in range(3):
+        hc = settle(hc, face(pitch=amp), 30)
+        fires.append(hc.jump)
+        bases.append(hc.npitch)
+        hc = settle(hc, face(pitch=0.0), 30)      # 放下
+    print(f"      固定幅度 {amp:.3f} 三连跳: {fires}  基线 {[f'{b:+.3f}' for b in bases]}")
+    check("三连跳全部触发", all(fires), f"{fires}")
+    check("俯仰基线未被学走（|Δ| < 0.03）",
+          max(abs(b) for b in bases) < 0.03, f"{bases}")
+
+    # 反向：无意图的噪声级偏置（坐姿漂移）仍要被吸收 —— 意图门不能把自愈关死
+    hc2 = calibrated()
+    rng = np.random.default_rng(3)
+    for _ in range(240):                          # 8 秒
+        hc2.update(face(pitch=0.10 + rng.normal(0, 0.03)), DT)
+    print(f"      无意图偏置 0.10 → 基线 {hc2.npitch:+.3f}（应被吸收到 ≈0.10）")
+    check("无意图的坐姿漂移仍被吸收", abs(hc2.npitch - 0.10) < 0.05,
+          f"npitch={hc2.npitch:+.3f}")
+
+
+
     """静态检查：代码里引用的配置项是否都存在（含本轮新增的）。"""
     print("\n[14] 静态检查：配置项引用")
     import pathlib
@@ -772,6 +807,7 @@ def main() -> int:
     test_odd_displacement_guard()
     test_yaw_pitch_decoupling()
     test_held_look_up_not_learned()
+    test_repeated_jump_same_effort()
     test_baseline_self_heal()
     test_adapt_channels_independent()
     test_noise_does_not_chatter()
