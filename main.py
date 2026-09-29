@@ -205,7 +205,8 @@ def run_probe(args) -> int:
                 print(f"[probe] t={now - t0:4.1f}s  cam {tr.fps:4.1f}fps  "
                       f"脸{'✓' if st.found else '·'}  "
                       f"人体{'✓' if p.found else '·'}({p.coverage():2d}点)  "
-                      f"手{len(vf.hands)}  face {tr.timings['face']:4.1f}ms "
+                      f"手{len(hands)}({getattr(tr, '_hand_src', '-')})  "
+                      f"face {tr.timings['face']:4.1f}ms "
                       f"vision {tr.timings['vision']:5.1f}ms")
                 print(f"          状态 {state:5s}  axis{inp.axis:+.2f}  "
                       f"动作{'开' if inp.action else '关'}  "

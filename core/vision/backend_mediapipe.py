@@ -111,7 +111,9 @@ def available() -> Tuple[bool, str]:
 
 class MediaPipeEngine:
     def __init__(self, max_hands: int = 2, body: bool = True, hands: bool = True,
-                 min_hand_conf: float = 0.30) -> None:
+                 min_hand_conf: float = 0.30, **_kw) -> None:
+        # **_kw 的用意见 backend_opencv 同名注释：不能因为不认识的参数
+        # 就构造失败，否则整条后端退化链会断。
         import mediapipe as mp
         from mediapipe.tasks.python import vision
         from mediapipe.tasks.python.core.base_options import BaseOptions

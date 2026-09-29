@@ -126,7 +126,10 @@ class AppleVisionEngine:
     """
 
     def __init__(self, max_hands: int = 2, body: bool = True, hands: bool = True,
-                 min_hand_conf: float = 0.30) -> None:
+                 min_hand_conf: float = 0.30, min_hand_joints: int = 8) -> None:
+        # min_hand_conf / min_hand_joints 是"检测到多少才算一只手"的门槛。
+        # 原默认 0.30 / 8 个关节，在分辨率偏低时几乎不可能同时满足，
+        # 表现为"始终检测不到手"。现在由 config 统一给出，便于按真机调。
         self._body_req = None
         self._hand_req = None
         reqs = []
@@ -141,6 +144,7 @@ class AppleVisionEngine:
             raise ValueError("至少启用一个请求")
         self._reqs = reqs
         self.min_hand_conf = min_hand_conf
+        self.min_hand_joints = max(4, int(min_hand_joints))
         self._handler_cache = None
 
     # ------------------------------------------------------------------ 推理
@@ -184,7 +188,7 @@ class AppleVisionEngine:
                     continue
                 loc = p.location()
                 joints[name] = Joint(float(loc.x), 1.0 - float(loc.y), float(p.confidence()))
-            if len(joints) < 8:
+            if len(joints) < self.min_hand_joints:
                 continue
             w = joints.get("wrist")
             if w is None or w.conf < self.min_hand_conf:

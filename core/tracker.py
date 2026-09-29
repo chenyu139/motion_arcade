@@ -717,13 +717,20 @@ class MotionTracker:
         self._frame_i = 0
         self._illum = IlluminationGuard()
         self._illum_mode = "normal"
+        # 手部兜底用的肤色方案（HandBackendSkin）—— 早已实现但一直没被接上，
+        # 这里真正实例化它，作为 Vision 手部不可用时的后备。
+        self._skin = None
+        self._last_hand_t = 0.0        # 上一次**真的**检测到手的时间
+        self._hand_src = "-"           # 当前手部来源：vision / skin / -
         self._stats = {"pose": 0, "hand": 0, "n": 0}
 
         # ---- 视觉引擎（自动按平台选后端）----
         try:
             from .vision import AutoEngine
             self._engine = AutoEngine(prefer=prefer, max_hands=C.HAND_MAX_NUM,
-                                      body=True, hands=hands)
+                                      body=True, hands=hands,
+                                      min_hand_conf=C.HAND_MIN_CONF,
+                                      min_hand_joints=C.HAND_MIN_JOINTS)
             self.hand_name = self._engine.name
             # opencv 后端内部已经含人脸检测，不要再叠一层 YuNet
             self._use_yunet = self._engine.name != "opencv"
@@ -747,6 +754,11 @@ class MotionTracker:
         if not self._open_camera(cam_index):
             self.err = f"无法打开摄像头（索引 {cam_index}）。请检查授权或被占用。"
             return
+        try:
+            self._skin = HandBackendSkin()        # 手部兜底：不依赖任何模型文件
+        except Exception as e:                    # noqa: BLE001
+            print(f"[tracker] 手部兜底不可用：{e}")
+            self._skin = None
         self.ok = True
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -799,6 +811,16 @@ class MotionTracker:
                 else:
                     face_img = enh
 
+            # ---- 骨骼 / 手部的送检分辨率 ----
+            # 人脸用 320 缩略图就够了（脸在画面里大），但 21 个手部关节不是：
+            # 手在 320 宽的画面里只有几十像素，指关节间距是个位数，
+            # 检测器没有可判别的结构。这里是"一直检测不到手"的主因。
+            if C.VISION_W >= C.CAM_W:
+                vision_img = frame              # 直接用原始帧，还省一次 resize
+            else:
+                vh = int(round(C.CAM_H * C.VISION_W / float(max(1, C.CAM_W))))
+                vision_img = cv2.resize(frame, (C.VISION_W, vh))
+
             # ---- 1) 头部主信号：YuNet 每帧跑，只露头也能稳（约 2ms）----
             st = FaceState(found=False)
             if self._face is not None:
@@ -823,7 +845,7 @@ class MotionTracker:
             if self._engine is not None and self._vision_mode != "off" and \
                     self._frame_i % self._vision_interval == 0:
                 t0 = time.time()
-                vf = self._engine.infer(small)
+                vf = self._engine.infer(vision_img)      # 注意：不是 small（见 VISION_W）
                 ms = (time.time() - t0) * 1000.0
                 self._vision_ms += 0.25 * (ms - self._vision_ms)
                 got = vf.pose.found or bool(vf.hands)
@@ -833,8 +855,14 @@ class MotionTracker:
                 else:
                     self._miss_streak += 1
                     if self._miss_streak > 4:
-                        # 连续 5 次没东西 → 退避，最多 1/12 帧
-                        self._vision_interval = min(12, self._vision_interval + 1)
+                        # 连续 5 次没东西 → 退避。
+                        # ⚠ 上限**必须**小于 VISION_STALE_AFTER 对应的帧数：
+                        # 原值 12 帧（≈0.4s @30fps）已经超过过期判定 0.35s，
+                        # 于是退避期间每一帧都被判过期、按"没检测到"返回 ——
+                        # 越退避越检测不到，永远回不去。这就是"一旦检测不到
+                        # 就一直检测不到"的死锁。
+                        self._vision_interval = min(C.VISION_BACKOFF_MAX,
+                                                    self._vision_interval + 1)
                 self._stats["pose"] += 1 if vf.pose.found else 0
                 self._stats["hand"] += len(vf.hands)
                 self._stats["n"] += 1
@@ -852,6 +880,34 @@ class MotionTracker:
                                           self.backend_name + "+" + vf.source)
 
             hands = [self._hand_state(h) for h in vf.hands]
+            # ---- 手部兜底 ----
+            # Apple Vision 的手部精度高（21 点），但它对分辨率、光照、手部姿态
+            # 都有要求。原来它一旦给不出结果就**完全没有后备** ——
+            # HandBackendSkin（肤色 + 轮廓，不需要任何模型文件）其实早已实现，
+            # 却从来没被接进 MotionTracker，于是手部游戏直接不可玩。
+            if hands:
+                self._last_hand_t = time.time()
+                self._hand_src = "vision"
+            elif (C.HANDSKIN_FALLBACK and self._skin is not None
+                  and self._vision_mode in ("hand", "full")
+                  and time.time() - self._last_hand_t > C.HANDSKIN_AFTER):
+                # 排除人脸用的框是按 DETECT_W 缩略图算出来的，而这里喂的是更高
+                # 分辨率的画面 —— 不换算的话要么排错区域、要么把脸当成手
+                # （脸同样是肤色）。这是兜底能用的前提。
+                fbox = None
+                if st.found and st.box is not None:
+                    sx = vision_img.shape[1] / float(C.DETECT_W)
+                    sy = vision_img.shape[0] / float(max(1, det_h))
+                    bx, by, bw, bh = st.box
+                    fbox = (int(bx * sx), int(by * sy),
+                            int(bw * sx), int(bh * sy))
+                skin = self._skin.detect(vision_img, fbox,
+                                         vision_img.shape[1], vision_img.shape[0])
+                if skin:
+                    hands = skin
+                    self._hand_src = "skin"
+                else:
+                    self._hand_src = "-"
 
             with self._lock:
                 self._frame = frame
@@ -934,7 +990,9 @@ class MotionTracker:
                 from .vision import AutoEngine
                 self._engine.close()
                 self._engine = AutoEngine(prefer=self._prefer, max_hands=C.HAND_MAX_NUM,
-                                          body=want[0], hands=want[1])
+                                          body=want[0], hands=want[1],
+                                          min_hand_conf=C.HAND_MIN_CONF,
+                                          min_hand_joints=C.HAND_MIN_JOINTS)
                 self._engine._mod_names = (mode,)
             except Exception as e:                                  # noqa: BLE001
                 print(f"[tracker] 切换视觉模式失败：{e}")
@@ -963,6 +1021,8 @@ class MotionTracker:
             "vision": self._vision_ms,
             "fps": self._fps,
             "illum": self._illum_mode,      # 当前光照判定：normal/dark/bright/flat
+            "hand_src": self._hand_src,     # 手部来源：vision / skin / -
+            "hands": len(self._hands),      # 当前实际交给游戏的手数
             "pose_rate": self._stats["pose"] / n,
             "hands_rate": self._stats["hand"] / n,
         }

@@ -42,7 +42,10 @@ def available() -> Tuple[bool, str]:
 
 class OpenCVEngine:
     def __init__(self, max_hands: int = 2, body: bool = True, hands: bool = True,
-                 min_hand_conf: float = 0.30) -> None:
+                 min_hand_conf: float = 0.30, **_kw) -> None:
+        # **_kw：AutoEngine 会把同一套参数发给**所有**后端。
+        # 后端不该因为收到一个自己不认识的参数就构造失败 —— 那会让整条
+        # 退化链断掉：apple 初始化失败时 opencv 也跟着失败 → 没有任何后端可用。
         from ..tracker import FaceBackendHaar, FaceBackendYuNet, HandBackendSkin
         self._face = None
         for factory in (FaceBackendYuNet, FaceBackendHaar):
