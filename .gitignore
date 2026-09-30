@@ -1,42 +1,22 @@
-# ---- Python ----
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-env/
-
 # ---- 构建产物 ----
 build/
-*.app/
 *.o
 *.dSYM/
 
 # ---- 运行时 ----
-run.log
 *.log
 .DS_Store
+run_args.txt
 
 # ---- 编辑器 ----
 .idea/
 .vscode/
 *.swp
 
-# 旧版本归档（v1，已被 motion_arcade 完整取代）
-_archive/
-
-# 虚拟环境符号链接 / 目录
-.venv
-
-# 真机诊断用的启动参数（.app 无法从 Finder 传参，改从这里读）
-run_args.txt
-
-# ---- 大文件：不入库（换成下载，见 README「模型文件」）----
-# screenshots/ 是 tools/shots.py、tools/shell_shots.py 的产物，随时可重新生成。
-# 它一度让 .git 涨到 207MB（历史里累计 183MB），现在只留本机、不进历史。
+# ---- 大文件：不入库 ----
+# 模拟器/真机验证截图，随时可重新生成
 screenshots/
-# MediaPipe 的三个 .task 模型（共 19MB）不在本机用到，需要时按 README 下载
-assets/models/*.task
 generated-images/
-# 临时素材下载工作区（curl 从素材站抓取的缓存，不入库）
+# MediaPipe .task 模型（Android 端由 prepare_assets.sh 下载）
+assets/models/*.task
 assets/dl/
