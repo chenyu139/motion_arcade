@@ -1,8 +1,10 @@
 package com.motionarcade.game
 
+import com.motionarcade.game.games.DrumGame
 import com.motionarcade.game.games.FootballGame
 import com.motionarcade.game.games.HoopGame
 import com.motionarcade.game.games.HotpotGame
+import com.motionarcade.game.games.MaskGame
 import com.motionarcade.game.games.MarioGame
 import com.motionarcade.game.games.PandaRollGame
 import com.motionarcade.game.games.SkiGame
@@ -26,7 +28,7 @@ class GameRegistry(
     private val bg: BackgroundManager,
 ) {
 
-    /** 已迁移 8 款：头控 6 款 + 手控 2 款。 */
+    /** 已迁移 10 款：头控 6 款 + 头手分工 1 款 + 手控 3 款（含两款文化动词游戏）。 */
     private val games: List<BaseGame> by lazy {
         listOf(
             MarioGame(sprites, bg),
@@ -35,6 +37,8 @@ class GameRegistry(
             PandaRollGame(sprites),
             HotpotGame(sprites, bg),
             SkiGame(sprites, bg),
+            MaskGame(sprites),
+            DrumGame(),
             SliceGame(sprites, bg),
             HoopGame(sprites, bg),
         )
@@ -51,7 +55,8 @@ class GameRegistry(
         sprites.preload(
             listOf("panda_hero", "panda_curl", "coin", "enemy", "basketball",
                 "fruit", "kiwi", "peach", "watermelon", "loquat", "pepper",
-                "sanxingdui", "bronze", "bronze_tree", "football", "tennis_ball")
+                "sanxingdui", "bronze", "bronze_tree", "football", "tennis_ball",
+                "mask_red", "mask_gold", "mask_green", "mask_black", "mask_blue")
         )
     }
 }

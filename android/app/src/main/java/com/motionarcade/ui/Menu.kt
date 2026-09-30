@@ -13,21 +13,15 @@ import kotlin.math.abs
  *
  * 两种选法都支持：
  *  · **触摸**（手机上最直接）：点卡片即进入；
- *  · **头部**（保持一致的无接触体验）：左右转头移动高亮，抬头进入。
+ *  · **头部**（保持一致的无接触体验）：左右转头移动高亮，点头进入。
  *
  * 之所以保留头部选择：这是体感游戏厅，玩家的手可能正拿着手机/不方便，
  * 而且"用头翻菜单"本身就是这个项目要验证的交互。
+ *
+ * 网格自适应：游戏少时用 3 列大卡（信息全）；超过 6 款自动切 5 列紧凑卡，
+ * 保证任意数量都在两三行内放下。
  */
 class Menu(private val bg: BackgroundManager) {
-
-    private companion object {
-        const val COLS = 3
-        const val CARD_W = 520f
-        const val CARD_H = 300f
-        const val GAP = 40f
-        val GRID_X = (Design.W - (COLS * CARD_W + (COLS - 1) * GAP)) / 2f
-        const val GRID_Y = 240f
-    }
 
     private var games: List<BaseGame> = emptyList()
     var selected = 0
@@ -40,18 +34,27 @@ class Menu(private val bg: BackgroundManager) {
     /** 高亮移动（换了一款）时通知，用于播"嗒"的音效。 */
     var onMove: (() -> Unit)? = null
 
+    // ---- 自适应网格 ----
+    private val dense: Boolean get() = games.size > 6
+    private val cols: Int get() = if (dense) 5 else 3
+    private val cardW: Float get() = if (dense) 330f else 520f
+    private val cardH: Float get() = if (dense) 330f else 300f
+    private val gap: Float get() = if (dense) 30f else 40f
+    private val gridX: Float get() = (Design.W - (cols * cardW + (cols - 1) * gap)) / 2f
+    private val gridY: Float get() = if (dense) 300f else 240f
+
     fun attach(list: List<BaseGame>) {
         games = list
         selected = 0
     }
 
     fun cardRect(i: Int): FloatArray {
-        val c = i % COLS
-        val r = i / COLS
+        val c = i % cols
+        val r = i / cols
         return floatArrayOf(
-            GRID_X + c * (CARD_W + GAP),
-            GRID_Y + r * (CARD_H + GAP),
-            CARD_W, CARD_H
+            gridX + c * (cardW + gap),
+            gridY + r * (cardH + gap),
+            cardW, cardH
         )
     }
 
@@ -104,6 +107,12 @@ class Menu(private val bg: BackgroundManager) {
         d.text("摄像头体感游戏厅　·　用头或手来玩", Design.W / 2, 140f, 28f,
             Col.rgb(200, 206, 226), align = "center")
 
+        val tx = if (dense) 36f else 52f
+        val titleSize = if (dense) 30f else 44f
+        val subSize = if (dense) 20f else 26f
+        val catSize = if (dense) 20f else 26f
+        val howSize = if (dense) 17f else 24f
+
         for (i in games.indices) {
             val g = games[i]
             val r = cardRect(i)
@@ -119,27 +128,39 @@ class Menu(private val bg: BackgroundManager) {
                 if (sel) g.accent else Col.rgb(60, 68, 96), if (sel) 6f else 3f)
 
             // 强调色条
-            d.roundRect(r[0] + 22f, r[1] + 24f, 8f, r[3] - 48f, 4f, g.accent)
+            d.roundRect(r[0] + 18f, r[1] + 22f, 8f, r[3] - 44f, 4f, g.accent)
 
             // 标题 / 副标题
-            d.text(g.title, r[0] + 52f, r[1] + 74f, 44f, Col.rgb(255, 255, 255), bold = true)
-            d.text(g.sub, r[0] + 52f, r[1] + 124f, 26f, Col.rgb(178, 188, 210))
+            d.text(g.title, r[0] + tx, r[1] + if (dense) 62f else 74f, titleSize,
+                Col.rgb(255, 255, 255), bold = true)
+            d.text(g.sub, r[0] + tx, r[1] + if (dense) 104f else 124f, subSize,
+                Col.rgb(178, 188, 210))
 
             // 分类 / 难度
-            d.text(g.category, r[0] + 52f, r[1] + 186f, 26f, g.accent)
+            d.text(g.category, r[0] + tx, r[1] + if (dense) 170f else 186f, catSize, g.accent)
             val stars = "★".repeat(g.difficulty) + "☆".repeat(3 - g.difficulty)
-            d.text(stars, r[0] + r[2] - 52f, r[1] + 186f, 26f,
+            d.text(stars, r[0] + r[2] - tx, r[1] + if (dense) 170f else 186f, catSize,
                 Col.rgb(255, 214, 120), align = "right")
 
-            // 玩法一句话
-            d.text(g.how, r[0] + 52f, r[1] + 246f, 24f, Col.rgb(150, 160, 184))
+            // 玩法一句话（放不下就截断）
+            val maxHow = r[2] - tx * 2f
+            d.text(fit(d, g.how, maxHow, howSize), r[0] + tx,
+                r[1] + if (dense) 240f else 246f, howSize, Col.rgb(150, 160, 184))
 
             if (sel) {
                 d.roundRect(cx - 90f, r[1] + r[3] - 6f, 180f, 12f, 6f, g.accent)
             }
         }
 
-        d.text("点卡片进入　·　或用头左右转选择、抬头确认",
+        d.text("点卡片进入　·　或用头左右转选择、点头确认",
             Design.W / 2, Design.BOT + 26f, 26f, Col.rgb(150, 160, 184), align = "center")
+    }
+
+    /** 宽度放不下时截断加省略号。 */
+    private fun fit(d: Canvas2D, text: String, maxW: Float, size: Float): String {
+        if (d.textWidth(text, size) <= maxW) return text
+        var t = text
+        while (t.isNotEmpty() && d.textWidth("$t…", size) > maxW) t = t.dropLast(1)
+        return "$t…"
     }
 }

@@ -14,9 +14,9 @@ import kotlin.math.hypot
 import kotlin.random.Random
 
 /**
- * 火锅大作战 —— 头部移动筷子 + 抬头下筷（头控）。
+ * 火锅大作战 —— 头部移动筷子 + 低头下筷（头控，头就是筷子本筷）。
  *
- * 操作：头部左右平移 → 移动筷子；抬头 → 下筷夹取。
+ * 操作：头部左右平移 → 移动筷子；低头 → 下筷（保持低头 = 连续捞）。
  * 按提示捞出**指定食材**，夹到辣椒扣命。60 秒内夹够 12 个目标食材。
  */
 class HotpotGame(
@@ -28,7 +28,7 @@ class HotpotGame(
     override val title = "火锅大作战"
     override val sub = "红油锅里捞目标"
     override val category = "头部控制"
-    override val hint = "头部左右移动筷子 · 抬头下筷 · 辣椒 = 扣命"
+    override val hint = "头部左右移动筷子 · 低头下筷 · 辣椒 = 扣命"
     override val how = "按提示捞出指定食材，别夹到辣椒"
     override val accent = Col.rgb(236, 92, 72)
     override val requires = setOf(InputChannel.HEAD)
@@ -151,7 +151,8 @@ class HotpotGame(
                 }
                 dipping = false
             }
-        } else if (inp.jump) {
+        } else if (inp.duck) {
+            // 低头 = 筷子往下：头就是筷子，保持低头就是"在锅里捞"
             dipping = true
             dipT = 0.45f
         }

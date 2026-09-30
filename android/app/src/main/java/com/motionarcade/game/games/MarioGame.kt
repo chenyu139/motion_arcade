@@ -15,7 +15,7 @@ import kotlin.math.sign
 /**
  * 超级马里奥（横版平台跳跃）—— 头控代表游戏。
  *
- * 操作：头部左右平移 → 跑动；抬头 → 跳跃（有冷却，连抬不会连跳）。
+ * 操作：头部左右平移 → 跑动；点头 → 跳跃（有冷却，连点不会连跳）。
  *
  * 物理常量与判定**逐项对齐 Python 端**（core/config.py + games/mario.py）：
  * GRAVITY 2600 / MAX_FALL 1500 / MOVE_ACCEL 3000 / GROUND_DECEL 3200 /
@@ -31,7 +31,7 @@ class MarioGame(
     override val title = "超级马里奥"
     override val sub = "川味横版"
     override val category = "头部控制"
-    override val hint = "左右转头跑动　抬头跳跃"
+    override val hint = "左右转头跑动　点头跳跃"
     override val how = "用头部控制跑动与跳跃，吃金币、踩敌人，跑到终点旗杆"
     override val accent = Col.rgb(232, 96, 72)
     override val requires = setOf(InputChannel.HEAD)

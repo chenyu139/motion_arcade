@@ -80,6 +80,8 @@ class GameSurfaceView(
         holder.addCallback(this)
         isFocusable = true
         keepScreenOn = true
+        Sfx.attach(context.applicationContext)
+        GamePrefs.attach(context.applicationContext)
         registry.preload()
         menu.attach(registry.entries)
         menu.onEnter = { game -> enterGame(game) }
@@ -181,7 +183,9 @@ class GameSurfaceView(
             drawFrame()
 
             val elapsed = System.nanoTime() - frameStart
-            val sleepMs = (FRAME_NS - elapsed) / 1_000_000L
+            // 热节流档位 ≥1 时渲染降到 30fps（分析侧同时跳帧），给 SoC 降温空间
+            val targetNs = if (pipeline.perfTier >= 1) FRAME_NS * 2 else FRAME_NS
+            val sleepMs = (targetNs - elapsed) / 1_000_000L
             if (sleepMs > 1) {
                 try { Thread.sleep(sleepMs - 1) } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt(); break
@@ -201,7 +205,13 @@ class GameSurfaceView(
             "game" -> {
                 val g = current ?: return
                 g.tickEffects(dt)
-                g.update(dt, inp)
+                // 需要的通道全部在线才推进游戏 —— HUD 状态胶囊里的"已暂停"就是这个含义。
+                // 没有这层，时间驱动的玩法（鼓点/变脸/火锅的倒计时与扣命）会在
+                // 玩家暂时离开画面时悄悄扣血，回来发现已被判负。
+                val ready =
+                    (InputChannel.HEAD !in g.requires || inp.found) &&
+                    (InputChannel.HAND !in g.requires || inp.handFound)
+                if (ready) g.update(dt, inp)
                 if (g.state != BaseGame.STATE_PLAY) {
                     scene = "result"
                     resultWin = g.state == BaseGame.STATE_WIN

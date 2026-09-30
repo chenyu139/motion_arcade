@@ -43,12 +43,13 @@ dl "$MODELS_URL/face_landmarker/face_landmarker/float16/1/face_landmarker.task" 
 # **移植新游戏时**：把新游戏用到的精灵名加进 SPRITES，再重跑本脚本。
 # 当前归属：mario(panda_hero/panda_curl/coin/enemy) panda_roll(sanxingdui/
 # bronze/bronze_tree) slice(fruit 六件) hoop(basketball) football(football)
-# tennis(tennis_ball)；hotpot/ski 纯程序绘制，无精灵。
+# tennis(tennis_ball) mask(mask 五张)；hotpot/ski/drum 纯程序绘制，无精灵。
 SPRITES=(
     panda_hero panda_curl coin enemy
     sanxingdui bronze bronze_tree
     fruit kiwi peach watermelon loquat pepper
     basketball football tennis_ball
+    mask_red mask_gold mask_green mask_black mask_blue
 )
 echo "==> 复制并降采样精灵（原图 1024 → 512，白名单 ${#SPRITES[@]} 张）"
 if [ -d "$SRC_ASSETS/sprites" ]; then

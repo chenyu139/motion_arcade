@@ -15,7 +15,7 @@ import kotlin.random.Random
 /**
  * 熊猫滚滚 —— 三星堆主题伪 3D 管道跑酷（头控）。
  *
- * 操作：头部左右平移 → 三条道之间切换；抬头 → 跳过矮障碍（陶俑）。
+ * 操作：头部左右平移 → 三条道之间切换；点头 → 跳过矮障碍（陶俑）。
  *
  * 伪 3D 的核心是 [project]：z∈[0,1]（0=最近，1=地平线）映射到屏幕 y 与缩放，
  * 与 Python 端完全同一条曲线，保证透视观感一致。
@@ -26,7 +26,7 @@ class PandaRollGame(private val sprites: SpriteManager) : BaseGame() {
     override val title = "熊猫滚滚"
     override val sub = "三星堆管道疾走"
     override val category = "头部控制"
-    override val hint = "头部左右换道 · 抬头跳过陶俑 · 竹笋 +10"
+    override val hint = "头部左右换道 · 点头跳过陶俑 · 竹笋 +10"
     override val how = "在管道里换道躲障碍，越跑越快"
     override val accent = Col.rgb(120, 226, 198)
     override val difficulty = 3

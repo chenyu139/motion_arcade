@@ -14,9 +14,9 @@ import kotlin.math.hypot
 import kotlin.random.Random
 
 /**
- * 川网 · 底线对拉 —— 头部跑位 + 抬头挥拍（头控）。
+ * 川网 · 底线对拉 —— 头部跑位 + 手掌横扫挥拍（头 + 手分工）。
  *
- * 操作：头部左右平移 → 沿底线跑位；抬头 → 挥拍，
+ * 操作：头部左右平移 → 沿底线跑位；手掌横扫 → 挥拍（身体动作即挥拍本身），
  * **拍面与球的距离决定 完美 / 良好 / 勉强**（判定深度所在）。
  * 目标：先得 5 分。
  */
@@ -25,11 +25,11 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
     override val key = "tennis"
     override val title = "川网 · 底线对拉"
     override val sub = "2026 四川城市网球联赛"
-    override val category = "头部控制"
-    override val hint = "头部左右跑位 · 抬头挥拍 · 看准拍面与球的距离"
-    override val how = "跑到位、抬头挥拍，先到 5 分"
+    override val category = "头部 + 手部"
+    override val hint = "头部左右跑位 · 手掌横扫挥拍 · 看准拍面与球的距离"
+    override val how = "跑到位、扫手挥拍，先到 5 分"
     override val accent = Col.rgb(96, 196, 244)
-    override val requires = setOf(InputChannel.HEAD)
+    override val requires = setOf(InputChannel.HEAD, InputChannel.HAND)
 
     private companion object {
         const val GROUND = 892f
@@ -90,7 +90,7 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
         swingCd = maxOf(0f, swingCd - dt)
         if (swing > 0f) swing = (swing - dt * 3.2f).coerceAtLeast(0f)
 
-        if (inp.jump && swingCd <= 0f) {
+        if (inp.swing != 0 && swingCd <= 0f) {
             swing = 1f
             swingCd = 0.42f
             tryHit()

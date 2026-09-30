@@ -17,7 +17,7 @@ import kotlin.random.Random
 /**
  * 川西滑雪 —— S 形雪道速降（头控）。
  *
- * 操作：头部左右平移 → 横移；抬头 → 跳过雪包。
+ * 操作：头部左右平移 → 横移；点头 → 跳过雪包。
  * 目标：60 秒内滑完 5000 米；冲出雪道撞树减速，穿过旗门得分。
  * 常量与 Python 端一致：PLAYER_Y 742 / TRACK_W 660 / GOAL_M 5000 / TIME 60 / speed 430。
  */
@@ -30,7 +30,7 @@ class SkiGame(
     override val title = "川西滑雪"
     override val sub = "S 形雪道速降"
     override val category = "头部控制"
-    override val hint = "头部左右转向 · 抬头跳过雪包"
+    override val hint = "头部左右转向 · 点头跳过雪包"
     override val how = "跟着雪道走，别撞树，穿旗门加分"
     override val accent = Col.rgb(108, 190, 246)
     override val requires = setOf(InputChannel.HEAD)

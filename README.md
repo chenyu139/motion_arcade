@@ -19,7 +19,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 技术选型、分层架构、踩坑记录见 [android/README.md](android/README.md)。
 
-## 18 款游戏（已移植 8 / 18）
+## 18 款游戏（已移植 10 / 18）
 
 ### 头部控制
 
@@ -31,11 +31,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | `panda_roll` | 熊猫滚滚 | ✅ 已移植 |
 | `hotpot` | 火锅大作战 | ✅ 已移植 |
 | `ski` | 川西滑雪 | ✅ 已移植 |
-| `mask` | 川剧变脸 | 待移植 |
+| `mask` | 川剧变脸 | ✅ 已移植（手掌扫脸换妆） |
 | `climb` | 蜀道攀岩 | 待移植 |
 | `lantern` | 自贡灯会 | 待移植 |
 | `dino` | 太阳神鸟 | 待移植 |
-| `drum` | 蜀韵鼓点 | 待移植 |
+| `drum` | 蜀韵鼓点 | ✅ 已移植（握拳击鼓+节拍） |
 | `fishing` | 岷江捕鱼 | 待移植 |
 
 ### 手部控制
@@ -52,6 +52,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 补移植一个游戏的步骤：在 `android/app/.../game/games/` 新建类继承
 [BaseGame]，再到 [GameRegistry] 列表加一行。
 
+**交互设计原则**（详见 android/README）：动词来自文化动作本身（变脸=手扫过脸、
+鼓点=握拳下砸）；头部只负责瞄准/转向与低频"点头"确认，不做持续仰头类触发；
+中性感校准全程无感自适应。
+
 ## 目标设备
 
 1. **Android 手机**（当前测试档）：任意 arm64 机型，Android 8.0+。
@@ -59,6 +63,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 2. **低成本板卡**（最终档）：如 Amlogic A311D2（Mali-G52 / LPDDR4X），
    届时游戏直接 HDMI 出图。已完成裁剪：ABI 只留 `arm64-v8a`、精灵/背景
    白名单打包、release 配 R8，debug APK 33.6MB。
+   检测到外接显示时相机自动切后置镜头，并锁定 AE/AWB/AF（对标游戏机摄像头
+   的稳定成像）；热节流/推理吃紧时自动降档（分析跳帧 + 渲染 30fps）。
 
 **手机当"处理+摄像头"设备投屏**：无需改代码，游戏是全屏渲染，任何镜像
 通道都可用。电脑端用 `scrcpy -s <ip>:5555 --no-control`（约 50–100ms 延迟，

@@ -12,10 +12,10 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 /**
- * 川超 · 点球王 —— 头部瞄准 + 抬头起脚（头控）。
+ * 川超 · 点球王 —— 头部瞄准 + 点头起脚（头控）。
  *
- * 操作：头部左右平移 → 横向瞄准；抬头 → 起脚射门，
- * **抬头高度决定打上角还是下角**（这是本作唯一的操作深度）。
+ * 操作：头部左右平移 → 横向瞄准；点头 → 起脚射门，
+ * **抬头/低头的连续幅度决定打上角还是下角**（瞄准用，非触发）。
  * 目标：10 次射门打进 6 球；死角额外加分，连击有加成。
  */
 class FootballGame(private val sprites: SpriteManager) : BaseGame() {
@@ -24,8 +24,8 @@ class FootballGame(private val sprites: SpriteManager) : BaseGame() {
     override val title = "川超 · 点球王"
     override val sub = "四川省城市足球联赛"
     override val category = "头部控制"
-    override val hint = "头部左右瞄准 · 抬头射门 · 死角 +60"
-    override val how = "瞄准球门死角，抬头起脚，10 球进 6 球"
+    override val hint = "头部左右瞄准 · 点头射门 · 死角 +60"
+    override val how = "瞄准球门死角，点头起脚，10 球进 6 球"
     override val accent = Col.rgb(72, 196, 138)
     override val requires = setOf(InputChannel.HEAD)
 

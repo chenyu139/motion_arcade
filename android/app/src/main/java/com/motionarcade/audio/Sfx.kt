@@ -1,7 +1,9 @@
 package com.motionarcade.audio
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import java.util.concurrent.Executors
@@ -38,6 +40,27 @@ object Sfx {
     private val cache = HashMap<String, ShortArray>()
     private val pool = Executors.newSingleThreadExecutor { r ->
         Thread(r, "sfx").apply { isDaemon = true }
+    }
+
+    /**
+     * 系统报告的音频输出延迟（毫秒）。节奏类游戏判定要用它对齐：
+     * 玩家听到的是 `now + outputLatency` 时刻的声音，判定窗口必须以
+     * "听到的时间"为准，否则永远差半拍。
+     */
+    @Volatile
+    var outputLatencyMs: Float = 80f
+        private set
+
+    /** 传入 applicationContext，读取设备音频延迟参数。 */
+    fun attach(context: Context) {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            // "audio_output_latency" 即 AudioManager.PROPERTY_OUTPUT_LATENCY 的键值
+            outputLatencyMs = am.getProperty("audio_output_latency")
+                ?.toFloatOrNull()?.coerceIn(20f, 300f) ?: 80f
+            Log.i(TAG, "audio output latency ≈ ${outputLatencyMs}ms")
+        } catch (_: Exception) {
+        }
     }
 
     // ------------------------------------------------------------------ 对外接口
@@ -220,6 +243,39 @@ object Sfx {
             toPcm(arpeggio(listOf(523.25f, 659.25f, 783.99f, 1046.5f), 0.09f))
         "start" ->      // 开始：厚和弦
             toPcm(chord(listOf(261.63f, 329.63f, 392f), 0.42f, vol = 0.46f))
+
+        // ---- 蜀韵鼓点（川剧锣鼓）----
+        "drum" ->       // 鼓：低频敲击，短促有力
+            toPcm(mix(
+                tone(128f, 0.16f, vol = 0.62f, harm = 0.14f, slide = -70f,
+                    attack = 0.002f, power = 3.4f),
+                tone(310f, 0.05f, vol = 0.22f, harm = 0.05f, attack = 0.001f, power = 4f),
+                noiseBurst(0.03f, 0.20f)
+            ))
+        "drum_side" ->  // 边击（击偏了）：更薄更干
+            toPcm(mix(
+                tone(210f, 0.09f, vol = 0.34f, harm = 0.10f, slide = -110f,
+                    attack = 0.002f, power = 3.6f),
+                noiseBurst(0.025f, 0.16f)
+            ))
+        "gong" ->       // 锣：金属嗡鸣，长衰减（变脸/大判定的仪式感）
+            toPcm(mix(
+                tone(196f, 0.9f, vol = 0.30f, harm = 0.16f, attack = 0.004f, power = 1.4f),
+                tone(392.4f, 0.9f, vol = 0.20f, harm = 0.20f, attack = 0.004f, power = 1.5f),
+                tone(587.9f, 0.7f, vol = 0.14f, harm = 0.24f, attack = 0.003f, power = 1.7f)
+            ))
+        "tick" ->       // 节拍器（校准/背拍）：干净一声
+            toPcm(tone(880f, 0.04f, vol = 0.34f, harm = 0.06f, attack = 0.001f, power = 3.5f))
+
         else -> ShortArray(0)     // "pause" 等：不发声
+    }
+
+    /** 白噪声爆点（鼓皮接触的一瞬）。 */
+    private fun noiseBurst(dur: Float, vol: Float): FloatArray {
+        val n = (dur * RATE).toInt()
+        val e = env(n, 0.001f, dur, 3.2f)
+        val out = FloatArray(n)
+        for (i in 0 until n) out[i] = (Random.nextFloat() * 2f - 1f) * e[i] * vol
+        return out
     }
 }

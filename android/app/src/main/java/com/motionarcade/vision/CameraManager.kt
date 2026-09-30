@@ -2,8 +2,17 @@ package com.motionarcade.vision
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.hardware.camera2.CaptureRequest
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Size
+import android.view.Display
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -28,7 +37,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    开销相比并不划算，而且 RGBA 让"预览帧复用"变得零成本。
  * 3. **STRATEGY_KEEP_ONLY_LATEST**：体感游戏要的是"最新姿态"，
  *    积压旧帧只会让操作延迟感变重。
- * 4. **前置摄像头**：玩家看着屏幕玩，必须能看到自己的脸/手。
+ * 4. **镜头可切换**：手机当屏幕玩 → 前置（镜像交互，玩家能自检"有没有被识别"）；
+ *    手机当主机接电视/大屏（检测到外接显示）→ 自动切后置（传感器更好、
+ *    视场更广，也更接近最终板卡 + USB 摄像头的形态）。切换即时重绑定。
+ * 5. **锁定相机自动调节**（对标游戏机摄像头"固定曝光固定焦距"的稳定性）：
+ *    · AWB 从第一帧就锁 —— 白平衡泵是画面"忽冷忽热"的主要来源，锁定无害；
+ *    · 后置镜头把 AF 关掉、对焦固定在无穷远 —— 2m 外的人脸在超焦距景深内，
+ *      换来的是不会"拉风箱"（前置本来就是定焦，无需处理）；
+ *    · AE 延迟 2.5 秒再锁 —— 启动瞬间就锁会把室内欠曝定死，等自动曝光收敛后
+ *      锁定，兼顾亮度正确与"曝光泵"消除。
  */
 class CameraManager(
     private val context: Context,
@@ -39,11 +56,23 @@ class CameraManager(
         private const val TAG = "CameraManager"
         /** 与 Python 端 CAM_W/CAM_H 一致；够用且省算力。 */
         private val ANALYSIS_SIZE = Size(640, 480)
+        private const val AE_LOCK_DELAY_MS = 2500L
     }
 
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var provider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
     private val bound = AtomicBoolean(false)
+    private val aeLockRunnable = Runnable { lockAe() }
+
+    /** 当前镜头：true=前置。镜像逻辑（预览/手感方向）都依赖它。 */
+    @Volatile
+    var lensFront: Boolean = true
+        private set
+
+    /** 当前帧画面是否镜像（前置=是）。 */
+    val mirrored: Boolean get() = lensFront
 
     // ---- 预览缩略图：双缓冲 ----
     //
@@ -66,18 +95,55 @@ class CameraManager(
     @Volatile
     private var thumbRead = 0
 
-    /** 最近一帧缩略图（HUD 预览面板用）。 */
+    /** 最近一帧缩略图（HUD 预览面板用；前置已按"照镜子"镜像）。 */
     val lastFrame: android.graphics.Bitmap get() = thumbBuf[thumbRead]
 
     fun updateLastFrame(src: android.graphics.Bitmap) {
         val w = 1 - thumbRead
-        thumbCanvas[w].drawBitmap(src, null, thumbDst, null)
+        val c = thumbCanvas[w]
+        c.save()
+        if (mirrored) c.scale(-1f, 1f, thumbW / 2f, thumbH / 2f)
+        c.drawBitmap(src, null, thumbDst, null)
+        c.restore()
         thumbRead = w
+    }
+
+    /** 切换镜头；运行中会即时重绑定。 */
+    fun setLens(front: Boolean) {
+        if (lensFront == front) return
+        lensFront = front
+        if (bound.get()) {
+            Log.i(TAG, "lens -> ${if (front) "front" else "back"} (rebind)")
+            rebind()
+        }
+    }
+
+    /** 外接显示（HDMI / 无线投屏 / 板卡）存在 → 该用"主机形态"的后置镜头。 */
+    private fun hasExternalDisplay(): Boolean = try {
+        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        dm.displays.any { it.displayId != Display.DEFAULT_DISPLAY }
+    } catch (e: Exception) {
+        Log.w(TAG, "display probe failed", e)
+        false
     }
 
     @SuppressLint("UnsafeOptInUsageError")
     fun start() {
         if (bound.getAndSet(true)) return
+        // 只在首次启动时自动选择；之后以显式 setLens 为准
+        lensFront = !hasExternalDisplay()
+        bind()
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun rebind() {
+        mainHandler.removeCallbacks(aeLockRunnable)
+        provider?.unbindAll()
+        bind()
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun bind() {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             try {
@@ -97,18 +163,34 @@ class CameraManager(
                     )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                    .also { b ->
+                        // ---- 相机自动调节锁定（见类注释第 5 点）----
+                        val ext = Camera2Interop.Extender(b)
+                        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+                        if (!lensFront) {
+                            ext.setCaptureRequestOption(
+                                CaptureRequest.CONTROL_AF_MODE,
+                                CaptureRequest.CONTROL_AF_MODE_OFF
+                            )
+                            ext.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
+                        }
+                    }
                     .build()
                     .also {
                         it.setAnalyzer(cameraExecutor) { proxy -> onFrame(proxy) }
                     }
 
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
-                    CameraSelector.DEFAULT_FRONT_CAMERA,
+                    if (lensFront) CameraSelector.DEFAULT_FRONT_CAMERA
+                    else CameraSelector.DEFAULT_BACK_CAMERA,
                     analysis,
                 )
-                Log.i(TAG, "camera bound (front, ${ANALYSIS_SIZE})")
+                // AE 已收敛后锁定（消除持续微调的"曝光泵"）
+                mainHandler.removeCallbacks(aeLockRunnable)
+                mainHandler.postDelayed(aeLockRunnable, AE_LOCK_DELAY_MS)
+                Log.i(TAG, "camera bound (${if (lensFront) "front" else "back"}, $ANALYSIS_SIZE)")
             } catch (e: Exception) {
                 Log.e(TAG, "bind failed", e)
                 bound.set(false)
@@ -116,13 +198,29 @@ class CameraManager(
         }, ContextCompat.getMainExecutor(context))
     }
 
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun lockAe() {
+        try {
+            camera?.let {
+                val opts = CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
+                    .build()
+                Camera2CameraControl.from(it.cameraControl).setCaptureRequestOptions(opts)
+                Log.i(TAG, "AE locked")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AE lock unsupported", e)
+        }
+    }
+
     fun stop() {
         try {
+            bound.set(false)
             provider?.unbindAll()
+            camera = null
         } catch (e: Exception) {
-            Log.w(TAG, "unbind failed", e)
+            Log.w(TAG, "stop failed", e)
         }
-        bound.set(false)
     }
 
     fun shutdown() {

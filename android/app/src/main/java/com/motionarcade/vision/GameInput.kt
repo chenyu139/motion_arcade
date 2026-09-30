@@ -31,8 +31,19 @@ class GameInput {
     /** 头部左右转 -1 ~ +1（可以只转头不移动）。 */
     var yaw: Float = 0f
 
-    /** 动作键：抬头超阈值 或 张嘴，持续为 true。 */
+    /**
+     * 动作键（边沿）：快速点头 或 张嘴那刻为 true，保持不会连发。
+     *
+     * 语义约定（交互重构后）：**头部负责瞄准/转向，"点头"只做低频的发力/确认**——
+     * 持续仰头不再是任何游戏的主触发（那是疲劳最快、精度最差的头部动作）。
+     */
     var jump: Boolean = false
+
+    /** 快速点头边沿（同 [jump] 里的点头分量，想区分"点头 vs 张嘴"的游戏用这个）。 */
+    var nod: Boolean = false
+
+    /** 持续低头状态（带迟滞）：钻行/下筷这类"低着头做事"的连续动作。 */
+    var duck: Boolean = false
 
     /** 张嘴程度 0~1。 */
     var mouth: Float = 0f
@@ -55,6 +66,28 @@ class GameInput {
     var release: Boolean = false                // 张开边沿（握拳→张开那一刻）
     var grabHold: Boolean = false               // "保持收拢"连续状态
 
+    // ── 手势词表（文化动词的通用检测，游戏按语义取用）───────────────────
+    /** 横扫边沿：0=无 / +1=手掌向右快速扫 / -1=向左（变脸、挥拍这类"挥"的动词）。 */
+    var swing: Int = 0
+
+    /** 手掌横向速度（镜像后屏幕坐标/秒），供游戏自定义速度判定。 */
+    var handVx: Float = 0f
+
+    /** 手掌纵向速度（/秒，向下为正——击鼓的"下砸"用它）。 */
+    var handVy: Float = 0f
+
+    /** 左手向下速度（/秒，两只手分开给——击鼓要分清左右拳）。 */
+    var handDipL: Float = 0f
+
+    /** 右手向下速度（/秒）。 */
+    var handDipR: Float = 0f
+
+    /** 手掌 pseudo-depth 0~1：越 1 手越靠近镜头（推/递这类"向前"的动词近似）。 */
+    var handZ: Float = 0f
+
+    /** 手腕倾斜 -1 ~ +1（+ = 向右倒）：茶艺注水这类"倾"的动词。 */
+    var handTilt: Float = 0f
+
     // ── 全身（需要身体入镜）─────────────────────────────────────────────
     var bodyFound: Boolean = false
     var bodyX: Float = 0f                       // 身体横向偏移 -1 ~ +1
@@ -73,12 +106,15 @@ class GameInput {
     }
 
     /**
-     * 每帧开头调用：只清**边沿量**（pinch/release），连续量保留，
+     * 每帧开头调用：只清**边沿量**（pinch/release/nod/swing/jump），连续量保留，
      * 这样即使这一帧检测器没出结果，控制量也不会突然归零把角色甩回去。
      */
     fun beginFrame() {
         pinch = false
         release = false
+        nod = false
+        swing = 0
+        jump = false
     }
 
     /** 彻底复位（换游戏/重新校准时用）。 */
@@ -89,6 +125,8 @@ class GameInput {
         headY = 0f
         yaw = 0f
         jump = false
+        nod = false
+        duck = false
         mouth = 0f
         confidence = 1f
         quality = QUALITY_GOOD
@@ -111,6 +149,13 @@ class GameInput {
         armR = 0f
         armLExt = 0f
         armRExt = 0f
+        swing = 0
+        handVx = 0f
+        handVy = 0f
+        handDipL = 0f
+        handDipR = 0f
+        handZ = 0f
+        handTilt = 0f
     }
 }
 
