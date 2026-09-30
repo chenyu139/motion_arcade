@@ -325,13 +325,13 @@ class Atmosphere:
         pw = w + 160
         s = pygame.Surface((pw, h), pygame.SRCALPHA)
         rng = random.Random(3)
-        for i in range(5):
+        for i in range(3):
             x0 = rng.uniform(0, pw)
             wdt = rng.uniform(w * 0.045, w * 0.13)
             lean = rng.uniform(0.12, 0.34)
             pts = [(x0, 0), (x0 + wdt, 0),
                    (x0 + wdt + lean * h, h), (x0 + lean * h, h)]
-            U.aa_poly(s, pts, (255, 246, 214, 11), 0, ss=2)
+            U.aa_poly(s, pts, (255, 246, 214, 5), 0, ss=2)
         return s
 
     @staticmethod
@@ -512,7 +512,10 @@ def _world_overlays(w: int, h: int, preset: str, ground_y: int,
         return got
 
     P = _WORLD_PRESETS.get(preset, _WORLD_PRESETS["meadow"])
-    lx, ly = int(w * P["light"][0]), int(h * P["light"][1])
+    # 关卡背景有时是一整条长卷轴。光源仍按一个屏幕宽度定位，
+    # 否则会落到数千像素外，巨型光晕就会把首屏洗成一大片白色。
+    view_w = min(w, 1920)
+    lx, ly = int(view_w * P["light"][0]), int(h * P["light"][1])
     span, thick = P["fog_span"]
 
     # ---- 1) 统一调色：把整幅画面往主题色相上拉一点（第 9 项）----
@@ -528,7 +531,8 @@ def _world_overlays(w: int, h: int, preset: str, ground_y: int,
     #   等于 颜色 × 强度），再把这张图按 BLEND_RGB_ADD 叠上去。
     light = pygame.Surface((w, h))
     light.fill((0, 0, 0))
-    gr = int(max(w, h) * 0.80)
+    # 以画面高度决定光晕尺度，避免横向卷轴背景创建数百 MB 的光层。
+    gr = int(h * 0.72)
     glow = U.glow_surface(gr, P["light_col"], P["light_a"], 12)
     light.blit(glow, (lx - gr, ly - gr))
     # 边缘光：从画面顶部往下衰减的一条宽带，给远处物体勾出高光轮廓

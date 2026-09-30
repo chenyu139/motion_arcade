@@ -295,7 +295,7 @@ def card_surface(w: int, h: int, radius: int = R_MD,
 def card(surf: pygame.Surface, rect: pygame.Rect, radius: int = R_MD,
          top: Optional[Color] = None, bottom: Optional[Color] = None,
          outline: Optional[Color] = OUTLINE, rim: float = 0.6,
-         shadow: Optional[Tuple[int, int, int]] = SH_M,
+         shadow: Optional[Tuple[int, int, int]] = SH_S,
          glow: Optional[Color] = None, glow_a: int = 90) -> None:
     """画一张游戏卡片（圆角 + 渐变 + 顶部描光 + 投影 + 可选外发光）。"""
     if glow is not None:
@@ -413,19 +413,20 @@ def big_button(surf: pygame.Surface, rect: pygame.Rect, label: str,
     s = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
     pygame.draw.rect(s, tuple(dark), (0, 5, r.w, r.h - 5), border_radius=r.h // 2)
     pygame.draw.rect(s, tuple(color), (0, 0, r.w, r.h - 6), border_radius=r.h // 2)
-    pygame.draw.rect(s, (255, 255, 255, 96), (0, 3, r.w, r.h // 3),
-                     border_radius=r.h // 2)
     pygame.draw.rect(s, (255, 255, 255, 120), (0, 0, r.w, r.h - 6), 3,
                      border_radius=r.h // 2)
     U.glow(surf, (r.centerx, r.centery), r.w // 2 + 30, color,
            70 + int(50 * pulse) if hot else 40)
     surf.blit(s, (r.x, r.y))
-    img = U.outline_text(label, size, PAPER, INK, 3, True)
-    y = r.centery - img.get_height() // 2 - (14 if sub else 0)
+    img = U.render_text(label, size, PAPER, True)
+    y = r.centery - img.get_height() // 2 - (20 if sub else 0)
+    if sub:
+        shadow = U.render_text(label, size, INK, True)
+        surf.blit(shadow, (r.centerx - img.get_width() // 2 + 2, y + 3))
     surf.blit(img, (r.centerx - img.get_width() // 2, y))
     if sub:
-        text(surf, sub, (r.centerx, r.centery + img.get_height() // 2 - 16),
-             T_XS, PAPER_DIM, center=True)
+        text(surf, sub, (r.centerx, r.centery + min(38, r.h * 0.30)),
+             20, PAPER, center=True)
 
 
 def stars(surf: pygame.Surface, center: Tuple[float, float], filled: int,

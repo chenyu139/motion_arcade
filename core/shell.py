@@ -106,7 +106,7 @@ class Shell:
         # 默认**不再常驻**摄像头调试画面：玩家看到的是卡通化身卡片。
         # 原始画面 + 骨架 + FPS 归到按 H 打开的诊断层。
         self.show_diag = False
-        self.avatar = PlayerAvatar(UI.PRIMARY, "PLAYER 1")
+        self.avatar = PlayerAvatar(UI.PRIMARY, "玩家 1")
         self.fx = Feedback()
         self.atm = Atmosphere(C.DESIGN_W, C.DESIGN_H, UI.PRIMARY)
         self._face = FaceState()
@@ -555,16 +555,17 @@ class Shell:
         cls = type(g)
 
         # ---- 左：标题 ----
-        U.text(self.screen, cls.TITLE, (42, 14), UI.T_M, UI.PAPER, bold=True,
-               outline=UI.INK, outline_w=4)
-        U.text(self.screen, cls.SUB, (46, 68), UI.T_XS, UI.PAPER_DIM, bold=True)
+        U.text(self.screen, cls.TITLE, (42, 15), 36, UI.PAPER, bold=True,
+               shadow=2, shadow_color=UI.INK)
+        U.text(self.screen, cls.SUB, (46, 66), 22, UI.PAPER_DIM, bold=True)
 
         # ---- 中：状态卡 ----
         items = g.hud_items()
-        hx0, hx1 = 452, C.DESIGN_W - 452
         if items:
-            gap = UI.GAP_S
-            cw = int(min(276, (hx1 - hx0 - gap * (len(items) - 1)) / len(items)))
+            gap = 16
+            cw = int(min(260, (1040 - gap * (len(items) - 1)) / len(items)))
+            row_w = len(items) * cw + (len(items) - 1) * gap
+            x0 = (C.DESIGN_W - row_w) // 2
             ch = 88
             y = (C.HUD_H - ch) // 2
             for i, item in enumerate(items):
@@ -574,7 +575,7 @@ class Shell:
                 icon = item[3] if len(item) > 3 else ""
                 # 数值一变就弹一下 —— "我的操作有反馈"里最便宜也最有效的一环
                 pop = self._hud_pop.setdefault(label, UI.Pop())
-                r = pygame.Rect(hx0 + i * (cw + gap), y, cw, ch)
+                r = pygame.Rect(x0 + i * (cw + gap), y, cw, ch)
                 if self._hud_prev.get(label) != value:
                     if label in self._hud_prev:
                         pop.hit()
@@ -605,7 +606,7 @@ class Shell:
         else:
             mode, mcol, micon = "未识别到头 · 已暂停", UI.DANGER, "eye"
         UI.pill(self.screen, (C.DESIGN_W - 42, 56), mode, mcol, micon,
-                size=UI.T_XS, align="right", height=60)
+                size=22, align="right", height=52, pad=22)
 
     # 时间类数值是**倒计时**，每秒都在变；把它当"得分"会每秒弹一次 +1，
     # 所以显式排除。这是"由数值变化推断反馈"唯一需要人工标注的地方。
@@ -682,12 +683,11 @@ class Shell:
         cam_ok = bool(self.tracker and self.tracker.ok)
         state = self._track_state() if cam_ok else "track"
         orb = self._cam_preview(132, 132) if cam_ok else None
-        # 位置（508, 52）：标题与副标题占 x<420，状态胶囊在右端，
-        # 这一带是页眉里唯一干净的空档 —— 放在 648 会顶到英雄区上沿。
-        self.avatar.draw_cam_orb(self.screen, 516, 52, 104, orb,
+        # 页眉保持紧凑，为主标题与精选卡片留出呼吸空间。
+        self.avatar.draw_cam_orb(self.screen, 520, 48, 72, orb,
                                  self._face_in_preview((132, 132))
                                  if orb is not None else None, self._t, state)
-        self.avatar.draw_particles(self.screen, 648, 56, 150)
+        self.avatar.draw_particles(self.screen, 566, 48, 100)
 
     def _cam_preview(self, w: int, h: int) -> Optional[pygame.Surface]:
         """
@@ -759,7 +759,7 @@ class Shell:
             cam = self._cam_preview(img.w, img.h)
             self.avatar.draw_cam_card(self.screen, r, cam,
                                       self._face_in_preview(img.size),
-                                      self._t, state, "PLAYER 1")
+                                      self._t, state, "玩家 1")
             return
         # ---- 无摄像头：卡通化身 + 识别位置条（键盘/鼠标模式）----
         hc = self.head_ctl
@@ -1074,14 +1074,8 @@ class Shell:
             return
         cam_ok = bool(self.tracker and self.tracker.ok)
         if not cam_ok:
-            # 菜单自己已经有状态指示，这里只在游戏里提示，避免压住大厅标题。
-            # 做成靠左的胶囊贴在 HUD 下方 —— 之前是一行横在画面正中的白字，
-            # 既压住了 HUD 卡片，也是典型的"调试信息直接给玩家看"。
-            if self.scene == "game":
-                UI.pill(self.screen, (42, C.HUD_H + 30),
-                        "键盘 / 鼠标模式　方向键移动 · 空格动作 · 按住左键 = 握拳",
-                        UI.WARN, icon="wave", size=UI.T_XS, align="left",
-                        height=52, alpha=196)
+            # 输入模式已在右上角状态胶囊中说明。具体操作留给底部本局提示，
+            # 不再盖住游戏画面。
             return
         if self._lost_paused() is False and self.head_ctl.calibrating \
                 and self.lost_t < C.LOST_WARN_AFTER:

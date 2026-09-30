@@ -40,7 +40,6 @@ from . import config as C
 from . import icons
 from . import scene as SCN
 from . import sichuan as SC
-from . import sprites as SP
 from . import theme as U
 from . import ui as UI
 from .inputs import GameInput
@@ -55,7 +54,7 @@ GAP_X = 24
 GAP_Y = 22
 GRID_X = (C.DESIGN_W - (COLS * CARD_W + (COLS - 1) * GAP_X)) // 2
 GRID_Y = 462
-HERO = pygame.Rect(60, 96, C.DESIGN_W - 120, 330)
+HERO = pygame.Rect(60, 106, C.DESIGN_W - 120, 330)
 
 _CAT_COL = {"头部控制": UI.INFO, "手部控制": UI.SECONDARY, "头部 + 手部": (200, 150, 255)}
 
@@ -94,7 +93,9 @@ class Menu:
         """
         W, H = C.DESIGN_W, C.DESIGN_H
         s = pygame.Surface((W, H))
-        SCN.sky_or(s, "bg_bev_mist", W, H, (22, 20, 54), (62, 48, 108), (188, 122, 106))
+        # 大厅使用自绘暮色天空。雾景素材里有巨大的幽灵剪影，留给主题关卡，
+        # 放在游戏目录页会抢走卡片的注意力。
+        s.blit(SCN.sky(W, H, (20, 26, 62), (62, 47, 99), (180, 106, 106)), (0, 0))
         # 地平线余晖：暖色低垂的太阳，"夕照"最省事的说法
         SCN.sun(s, W * 0.74, H * 0.66, 84, (255, 190, 134))
         self.stars.draw(s, 0.0)
@@ -111,6 +112,11 @@ class Menu:
         # 地面
         SCN.ground_band(s, pygame.Rect(0, 900, W, H - 900), (46, 34, 80),
                         (22, 16, 44), 130)
+        # 远景素材本身偏亮；压一层低透明度的品牌色，让卡片和标题始终有
+        # 稳定对比度，同时保留天空、灯火和山峦的层次。
+        veil = pygame.Surface((W, H), pygame.SRCALPHA)
+        veil.fill((24, 18, 52, 96))
+        s.blit(veil, (0, 0))
         return s
 
     # ------------------------------------------------------------------ 状态
@@ -223,9 +229,9 @@ class Menu:
 
     # ------------------------------------------------------------------ 标题栏
     def _draw_topbar(self, surf) -> None:
-        UI.text(surf, "体 感 游 戏 厅", (62, 20), UI.T_L, UI.PAPER,
-                outline=UI.INK, outline_w=5)
-        U.text(surf, "MOTION ARCADE", (66, 84), UI.T_XS, (196, 186, 236),
+        U.text(surf, "体感游戏厅", (62, 16), 48, UI.PAPER, bold=True,
+               shadow=3, shadow_color=UI.INK)
+        U.text(surf, "MOTION ARCADE", (66, 72), 20, (208, 198, 238),
                bold=True)
         # 右侧：识别状态 + 玩法统计
         cam = self.info.get("cam_ok", False)
@@ -238,15 +244,15 @@ class Menu:
             tag, col, ic = "短暂丢帧 · 输入冻结", UI.WARN, "clock"
         else:
             tag, col, ic = "未识别到头 · 不会自动进入", UI.DANGER, "eye"
-        UI.pill(surf, (C.DESIGN_W - 62, 46), tag, col, ic, size=UI.T_XS,
-                align="right", height=58)
+        UI.pill(surf, (C.DESIGN_W - 62, 48), tag, col, ic, size=22,
+                align="right", height=52, pad=24)
         cats: Dict[str, int] = {}
         for g in self.games:
             cats[g["category"]] = cats.get(g["category"], 0) + 1
-        info = "　·　".join(f"{k} {v}" for k, v in cats.items())
-        img = U.outline_text(f"共 {self.n} 款　|　{info}", UI.T_XS - 4,
-                             (206, 196, 240), UI.INK, 3, True)
-        surf.blit(img, (C.DESIGN_W - 64 - img.get_width(), 92))
+        info = "　·　".join(f"{k.replace('控制', '')} {v}" for k, v in cats.items())
+        img = U.render_text(f"{self.n} 款游戏　·　{info}", 20,
+                            (206, 196, 232), True)
+        surf.blit(img, (C.DESIGN_W - 64 - img.get_width(), 82))
 
     # ------------------------------------------------------------------ 英雄区
     def _draw_hero(self, surf) -> None:
@@ -271,12 +277,12 @@ class Menu:
         h = HERO.inflate(int(HERO.w * (pop - 1)), int(HERO.h * (pop - 1)))
         h = h.move(0, int((1.0 - ease) * 26))
 
-        UI.card(surf, h, UI.R_XL, glow=accent, glow_a=78,
+        UI.card(surf, h, UI.R_XL, glow=accent, glow_a=54,
                 top=U.mix(UI.SURFACE_HI, accent, 0.16),
                 bottom=U.mix(UI.SURFACE_LO, accent, 0.06))
 
         # 大图标
-        box = pygame.Rect(h.x + 30, h.y + 30, 270, 270)
+        box = pygame.Rect(h.x + 28, h.y + 34, 258, 258)
         pygame.draw.rect(surf, (26, 21, 52), box, border_radius=UI.R_LG)
         pygame.draw.rect(surf, tuple(accent) + (150,), box, 3, border_radius=UI.R_LG)
         U.glow(surf, box.center, 150, accent, 72)
@@ -286,39 +292,31 @@ class Menu:
 
         # 文字区
         tx = box.right + 40
-        UI.text(surf, g["title"], (tx, h.y + 42), UI.T_XL, UI.PAPER,
-                outline=UI.INK, outline_w=6)
-        U.text(surf, g["sub"], (tx + 4, h.y + 148), UI.T_S, (222, 214, 250),
+        U.text(surf, "精选推荐", (tx + 4, h.y + 30), 20, accent, bold=True)
+        U.text(surf, g["title"], (tx, h.y + 56), 68, UI.PAPER,
+               bold=True, shadow=3, shadow_color=UI.INK)
+        U.text(surf, g["sub"], (tx + 4, h.y + 139), 30, (232, 226, 248),
                bold=True)
-        U.text(surf, g["how"], (tx + 4, h.y + 200), UI.T_XS, UI.PAPER_DIM)
+        U.text(surf, g["how"], (tx + 4, h.y + 187), 22, UI.PAPER_DIM)
 
         # 分类 + 难度
         cat = g["category"]
-        UI.pill(surf, (tx, h.y + 254), cat, _CAT_COL.get(cat, UI.INFO),
-                size=UI.T_XS - 4, align="left", height=50, pad=22)
-        cx = tx + 300
+        UI.pill(surf, (tx, h.y + 272), cat, _CAT_COL.get(cat, UI.INFO),
+                size=20, align="left", height=42, pad=18)
+        cx = tx + 270
         for k in range(3):
-            pts = U.star_points(cx + k * 40, h.y + 254, 15, 6.4, 5)
+            pts = U.star_points(cx + k * 40, h.y + 272, 15, 6.4, 5)
             U.aa_poly(surf, pts, UI.SECONDARY if k < g["difficulty"] else (74, 66, 120),
                       0, ss=3)
 
-        # ---- 吉祥物：让英雄区的空档也有内容，同时保留四川元素 ----
-        # 重构大厅时这三个精灵一度失去用处（信息都收进英雄区了），
-        # 但"四川文旅"是产品的一部分，不能因为改版就丢掉。
-        base = h.bottom - 14
-        SP.draw(surf, "panda_hero", h.x + 1080, base, height=232, anchor="bottom",
-                shadow=0.45)
-        SP.draw(surf, "gaiwan", h.x + 1290, base, height=104, anchor="bottom",
-                shadow=0.40)
-
         # 开始按钮
-        btn = pygame.Rect(h.right - 372, h.y + 56, 340, 148)
-        UI.big_button(surf, btn, "抬 头 开 始", accent, t=self.t, hot=True,
-                      size=UI.T_L, sub="或按回车")
+        btn = pygame.Rect(h.right - 354, h.y + 76, 320, 132)
+        UI.big_button(surf, btn, "开始游戏", accent, t=self.t, hot=True,
+                      size=UI.T_M, sub="抬头或按回车")
         # 序号。这里原本是一条「停留进度条」—— 它服务的自动进入已经去掉，
         # 进度条也就没有意义（留着反而暗示「再等一会儿会自己进去」）。
-        UI.text(surf, f"{self.sel + 1} / {self.n}", (btn.centerx, btn.bottom + 40),
-                UI.T_XS, UI.PAPER_DIM, center=True)
+        U.text(surf, f"{self.sel + 1:02d} / {self.n:02d}",
+               (btn.centerx, btn.bottom + 45), 20, UI.PAPER_DIM, center=True)
 
     # ------------------------------------------------------------------ 卡片
     def _draw_card(self, surf, i: int) -> None:
@@ -339,7 +337,7 @@ class Menu:
         lift = int((1.0 - ease) * 40)
         k = abs(self.sel_f - i)
         hot = max(0.0, 1.0 - k)
-        r = r.inflate(int(14 * hot), int(14 * hot)).move(0, -int(10 * hot) + lift)
+        r = r.inflate(int(8 * hot), int(8 * hot)).move(0, -int(6 * hot) + lift)
 
         UI.card(surf, r, UI.R_LG,
                 top=U.mix(UI.SURFACE_HI, accent, 0.20 * hot + 0.06),
@@ -350,11 +348,11 @@ class Menu:
             pygame.draw.rect(surf, (255, 255, 255, 70), r, 3,
                              border_radius=UI.R_LG)
 
-        icons.draw_icon(surf, g["icon"], r.centerx, r.y + int(r.h * 0.42),
-                        int(r.h * 0.40), accent, (255, 255, 255))
-        U.text(surf, g["title"], (r.centerx, r.y + int(r.h * 0.70)), UI.T_S,
-               UI.PAPER, center=True, bold=True,
-               outline=UI.INK, outline_w=3)
+        icons.draw_icon(surf, g["icon"], r.centerx, r.y + int(r.h * 0.40),
+                        int(r.h * 0.36), accent, (255, 255, 255))
+        U.text(surf, g["title"], (r.centerx, r.y + int(r.h * 0.70)), 28,
+               UI.PAPER, center=True, bold=True, shadow=2,
+               shadow_color=UI.INK)
         # 难度：用小点而不是星星，小尺寸下更好认
         for d in range(3):
             col = UI.SECONDARY if d < g["difficulty"] else (70, 62, 112)

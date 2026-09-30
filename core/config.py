@@ -43,14 +43,14 @@ GAME_H = GAME_BOT - GAME_TOP
 CENTER = (DESIGN_W // 2, GAME_TOP + GAME_H // 2)
 
 # 左下角摄像头预览面板（游戏请避开）
-PREVIEW_W = 352
-PREVIEW_H = 306
+PREVIEW_W = 300
+PREVIEW_H = 240
 # 玩家卡片里的摄像头画面刷新率。
 # 从 BGR numpy 造一张 pygame 表面要 4~5ms（含一次缩放 + 一次字节序转换），
 # 每帧都做会吃掉 16.7ms 预算的四分之一。降到 20Hz 后均摊 < 1ms，
 # 而玩家对"镜子里自己的画面"远没有对游戏画面那么敏感，看不出差别。
 CAM_PREVIEW_HZ = 20.0
-PREVIEW_X = 28
+PREVIEW_X = 24
 PREVIEW_Y = GAME_BOT - 18 - PREVIEW_H
 PREVIEW_RECT = (PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H)
 
