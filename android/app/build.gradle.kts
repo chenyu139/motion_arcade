@@ -15,16 +15,14 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        // 只打真机主流 ABI + 模拟器 x86_64，避免 MediaPipe 的 .so 把 APK 撑到几百 MB。
+        // 只打 arm64-v8a：目标设备（Android 手机 / Amlogic A311D2 级板卡）与
+        // Apple Silicon 上的模拟器全是 arm64。armeabi-v7a / x86_64 各占约 9MB
+        // 的 MediaPipe .so，去掉后 APK 从 54MB 降到约 35MB。
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        // 设计坐标系与 Python 端一致：1920x1080（横屏）
-        buildConfigField("int", "DESIGN_W", "1920")
-        buildConfigField("int", "DESIGN_H", "1080")
-        buildConfigField("int", "TARGET_FPS", "60")
+        // 设计坐标系：1920x1080（横屏），常量见 game/Design.kt
     }
 
     buildTypes {
@@ -72,11 +70,6 @@ android {
         jniLibs {
             useLegacyPackaging = true   // 让 .so 不压缩，减少安装后占用与加载耗时
         }
-    }
-
-    buildFeatures {
-        buildConfig = true
-        viewBinding = false
     }
 
     lint {

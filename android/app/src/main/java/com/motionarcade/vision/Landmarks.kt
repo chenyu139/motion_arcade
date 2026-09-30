@@ -144,19 +144,6 @@ val MP_POSE_TO_COCO: Map<String, Int> = mapOf(
     "right_ankle" to 28,
 )
 
-/** COCO-17 骨架连线（画火柴人/调试用）。 */
-val COCO17_EDGES: List<Pair<String, String>> = listOf(
-    "nose" to "left_eye", "nose" to "right_eye",
-    "left_eye" to "left_ear", "right_eye" to "right_ear",
-    "left_shoulder" to "right_shoulder",
-    "left_shoulder" to "left_elbow", "left_elbow" to "left_wrist",
-    "right_shoulder" to "right_elbow", "right_elbow" to "right_wrist",
-    "left_shoulder" to "left_hip", "right_shoulder" to "right_hip",
-    "left_hip" to "right_hip",
-    "left_hip" to "left_knee", "left_knee" to "left_ankle",
-    "right_hip" to "right_knee", "right_knee" to "right_ankle",
-)
-
 /**
  * 身体姿态帧（COCO-17）。等价于 Python 端 `PoseFrame`。
  *

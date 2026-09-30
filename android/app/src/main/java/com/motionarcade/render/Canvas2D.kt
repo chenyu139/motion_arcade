@@ -1,13 +1,11 @@
 package com.motionarcade.render
 
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import kotlin.math.abs
 
 /**
  * 颜色工具（对应 Python 端 `core.theme.U` 的颜色部分）。
@@ -29,17 +27,7 @@ object Col {
         return rgb(r, g, b, a)
     }
 
-    /** 两色插值。 */
-    fun mix(a: Int, b: Int, t: Float): Int {
-        val k = t.coerceIn(0f, 1f)
-        return rgb(
-            (Color.red(a) + (Color.red(b) - Color.red(a)) * k).toInt(),
-            (Color.green(a) + (Color.green(b) - Color.green(a)) * k).toInt(),
-            (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * k).toInt(),
-            (Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * k).toInt()
-        )
-    }
-
+    /** 仅替换 alpha 通道。 */
     fun alpha(color: Int, a: Int): Int =
         (a.coerceIn(0, 255) shl 24) or (color and 0x00FFFFFF)
 
@@ -162,41 +150,6 @@ class Canvas2D(private val canvas: Canvas) {
         canvas.drawArc(tmpRect, startDeg, sweepDeg, false, stroke)
     }
 
-    // ------------------------------------------------------------------ 位图
-
-    /** 以 (x,y) 为左上角贴图。 */
-    fun blit(bmp: Bitmap, x: Float, y: Float) {
-        canvas.drawBitmap(bmp, x, y, null)
-    }
-
-    /** 以 (cx,cy) 为中心、按给定高度缩放贴图（保持宽高比）。 */
-    fun blitCentered(bmp: Bitmap, cx: Float, cy: Float, targetH: Float, flipX: Boolean = false) {
-        val scale = targetH / bmp.height.toFloat()
-        val w = bmp.width * scale
-        val h = bmp.height * scale
-        val left = cx - w * 0.5f
-        val top = cy - h * 0.5f
-        if (flipX) {
-            canvas.save()
-            canvas.scale(-1f, 1f, cx, cy)
-            canvas.drawBitmap(bmp, null, RectF(left, top, left + w, top + h), null)
-            canvas.restore()
-        } else {
-            canvas.drawBitmap(bmp, null, RectF(left, top, left + w, top + h), null)
-        }
-    }
-
-    /** 绕中心旋转贴图。 */
-    fun blitRotated(bmp: Bitmap, cx: Float, cy: Float, targetH: Float, deg: Float) {
-        val scale = targetH / bmp.height.toFloat()
-        canvas.save()
-        canvas.rotate(deg, cx, cy)
-        val w = bmp.width * scale
-        val h = bmp.height * scale
-        canvas.drawBitmap(bmp, null, RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), null)
-        canvas.restore()
-    }
-
     // ------------------------------------------------------------------ 文字
 
     /** align: "left" | "center" | "right"（相对 x 的水平对齐）。 */
@@ -221,32 +174,6 @@ class Canvas2D(private val canvas: Canvas) {
         return textPaint.measureText(str)
     }
 
-    /** 描边文字（UI 标题常用：外描边 + 内填充）。 */
-    fun outlinedText(str: String, x: Float, y: Float, size: Float,
-                     fillColor: Int, strokeColor: Int, strokeW: Float,
-                     align: String = "left") {
-        textPaint.color = strokeColor
-        textPaint.textSize = size
-        textPaint.isFakeBoldText = true
-        textPaint.textAlign = when (align) {
-            "center" -> Paint.Align.CENTER
-            "right" -> Paint.Align.RIGHT
-            else -> Paint.Align.LEFT
-        }
-        val fm = textPaint.fontMetrics
-        val baseline = y - (fm.ascent + fm.descent) / 2f
-        stroke.color = strokeColor
-        stroke.strokeWidth = strokeW
-        stroke.style = Paint.Style.STROKE
-        stroke.textSize = size
-        stroke.textAlign = textPaint.textAlign
-        stroke.isFakeBoldText = true
-        canvas.drawText(str, x, baseline, stroke)
-        stroke.style = Paint.Style.STROKE
-        textPaint.color = fillColor
-        canvas.drawText(str, x, baseline, textPaint)
-    }
-
     // ------------------------------------------------------------------ 状态
 
     fun save(): Int = canvas.save()
@@ -266,23 +193,4 @@ class Canvas2D(private val canvas: Canvas) {
 
     /** 暴露底层 Canvas：需要直接用原生 API（如带 Paint/Shader 的 drawBitmap）时用。 */
     val raw: Canvas get() = canvas
-}
-
-/** 数值工具（对应 core/theme.py 里的 clamp/lerp 等）。 */
-object Num {
-    fun clamp(v: Float, lo: Float, hi: Float): Float =
-        if (v < lo) lo else if (v > hi) hi else v
-
-    fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
-
-    /** 帧率无关的平滑系数：halfLife 以"帧"为单位（60fps 基准）。 */
-    fun smoothK(halfLifeFrames: Float, dt: Float): Float {
-        val k60 = 1f - kotlin.math.exp(-0.6931f / halfLifeFrames)
-        return clamp(k60 * (dt * 60f), 0f, 1f)
-    }
-
-    fun approach(cur: Float, target: Float, maxDelta: Float): Float {
-        val d = target - cur
-        return if (abs(d) <= maxDelta) target else cur + if (d > 0) maxDelta else -maxDelta
-    }
 }

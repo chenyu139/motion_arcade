@@ -1,7 +1,7 @@
 package com.motionarcade.audio
 
+import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import java.util.concurrent.Executors
@@ -77,11 +77,23 @@ object Sfx {
             val minBuf = AudioTrack.getMinBufferSize(
                 RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
-            track = AudioTrack(
-                AudioManager.STREAM_MUSIC, RATE,
-                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuf, pcm.size * 2), AudioTrack.MODE_STATIC
-            )
+            track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_GAME)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build()
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(maxOf(minBuf, pcm.size * 2))
+                .build()
             if (track.state != AudioTrack.STATE_INITIALIZED) { dead = true; return }
             track.write(pcm, 0, pcm.size)
             track.play()

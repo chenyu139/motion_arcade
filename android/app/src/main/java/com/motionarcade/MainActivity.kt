@@ -2,12 +2,11 @@ package com.motionarcade
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
-import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -51,15 +50,15 @@ class MainActivity : ComponentActivity() {
 
         // GameSurfaceView 需要 LifecycleOwner 来绑定 CameraX（相机随生命周期自动解绑）
         gameView = GameSurfaceView(this, this)
-        gameView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            )
         setContentView(gameView)
 
         hideSystemBars()
         ensureCameraPermission()
+
+        // 返回键交给游戏层：游戏中先暂停/退回大厅；大厅里再按则退出应用
+        onBackPressedDispatcher.addCallback(this) {
+            if (!gameView.handleBack()) finish()
+        }
     }
 
     private fun ensureCameraPermission() {
@@ -99,17 +98,5 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         gameView.onDestroyOwner()
         super.onDestroy()
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
-        // 交给游戏层处理：游戏中先暂停/退出到菜单，菜单里再退出应用。
-        if (!gameView.handleBack()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                onBackPressedDispatcher.onBackPressed()
-            } else {
-                super.onBackPressed()
-            }
-        }
     }
 }
