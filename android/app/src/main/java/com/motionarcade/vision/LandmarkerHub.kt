@@ -18,6 +18,8 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * MediaPipe Tasks Vision 的封装：姿态(33) / 手(21) / 脸(468)。
@@ -61,6 +63,17 @@ class LandmarkerHub(private val context: Context) {
     private val handFailed = AtomicBoolean(false)
     private val faceFailed = AtomicBoolean(false)
 
+    /**
+     * 所有 MediaPipe 交互（ensure / release / detect）共用的锁。
+     *
+     * ensure·release 在主线程（切游戏/返回大厅），detectAsync 在相机线程 ——
+     * 不加锁时，`close()` 可以恰好落在 `detectAsync` 已拿到 landmarker 引用、
+     * 原生推理还在进行的窗口里，MediaPipe 原生层直接 SIGSEGV（fault addr 0x10，
+     * 模拟器实测复现）。锁粒度到"单次推理提交/单次 close"，两边各挡几毫秒，
+     * 换游戏时主线程这点阻塞可以忽略。
+     */
+    private val mpLock = ReentrantLock()
+
     /** GPU 推理失败 → 置位，下次 detectAsync 前整体重建为 CPU。 */
     private val gpuBroken = AtomicBoolean(false)
     /** 当前实际使用的 delegate（降级后为 true）。 */
@@ -97,19 +110,19 @@ class LandmarkerHub(private val context: Context) {
 
     // ------------------------------------------------------------------ 生命周期
 
-    fun ensure(channels: Set<InputChannel>) {
+    fun ensure(channels: Set<InputChannel>) = mpLock.withLock {
         if (InputChannel.BODY in channels || InputChannel.HEAD in channels) ensurePose()
         if (InputChannel.HAND in channels) ensureHand()
         if (InputChannel.HEAD in channels) ensureFace()
     }
 
-    fun release(channels: Set<InputChannel>) {
+    fun release(channels: Set<InputChannel>) = mpLock.withLock {
         if (InputChannel.BODY !in channels && InputChannel.HEAD !in channels) releasePose()
         if (InputChannel.HAND !in channels) releaseHand()
         if (InputChannel.HEAD !in channels) releaseFace()
     }
 
-    fun releaseAll() {
+    fun releaseAll() = mpLock.withLock {
         releasePose(); releaseHand(); releaseFace()
     }
 
@@ -252,31 +265,33 @@ class LandmarkerHub(private val context: Context) {
     fun detectAsync(channels: Set<InputChannel>, bitmap: Bitmap,
                     rotationDegrees: Int, timestampMs: Long) {
         // GPU 挂了就在这里（推理线程）重建为 CPU —— 不能在其他线程直接重建
-        if (gpuBroken.get() && !usingCpu) {
-            rebuildWithCpu(channels)
-            return                       // 本帧丢弃，重建后再开始推理
-        }
-        if (gpuBroken.get()) gpuBroken.set(false)
+        mpLock.withLock {
+            if (gpuBroken.get() && !usingCpu) {
+                rebuildWithCpu(channels)
+                return                       // 本帧丢弃，重建后再开始推理
+            }
+            if (gpuBroken.get()) gpuBroken.set(false)
 
-        val mp = BitmapImageBuilder(bitmap).build()
-        val opts = ImageProcessingOptions.builder()
-            .setRotationDegrees(rotationDegrees)
-            .build()
-        try {
-            pose?.detectAsync(mp, opts, timestampMs)
-            hand?.detectAsync(mp, opts, timestampMs)
-            face?.detectAsync(mp, opts, timestampMs)
-        } catch (e: Exception) {
-            // 注意：GPU delegate 的失败很多时候是**同步抛出**的（Graph has errors /
-            // GL_INVALID_ENUM），不会走 errorListener，所以必须在这里兜住。
-            val msg = e.message.orEmpty()
-            if (!usingCpu && (msg.contains("GL_", true) || msg.contains("gpu", true) ||
-                    msg.contains("Graph has errors", true))
-            ) {
-                Log.w(TAG, "GPU 推理异常，下一帧降级为 CPU: ${msg.take(120)}")
-                gpuBroken.set(true)
-            } else {
-                Log.w(TAG, "detect failed", e)
+            val mp = BitmapImageBuilder(bitmap).build()
+            val opts = ImageProcessingOptions.builder()
+                .setRotationDegrees(rotationDegrees)
+                .build()
+            try {
+                pose?.detectAsync(mp, opts, timestampMs)
+                hand?.detectAsync(mp, opts, timestampMs)
+                face?.detectAsync(mp, opts, timestampMs)
+            } catch (e: Exception) {
+                // 注意：GPU delegate 的失败很多时候是**同步抛出**的（Graph has errors /
+                // GL_INVALID_ENUM），不会走 errorListener，所以必须在这里兜住。
+                val msg = e.message.orEmpty()
+                if (!usingCpu && (msg.contains("GL_", true) || msg.contains("gpu", true) ||
+                        msg.contains("Graph has errors", true))
+                ) {
+                    Log.w(TAG, "GPU 推理异常，下一帧降级为 CPU: ${msg.take(120)}")
+                    gpuBroken.set(true)
+                } else {
+                    Log.w(TAG, "detect failed", e)
+                }
             }
         }
     }
