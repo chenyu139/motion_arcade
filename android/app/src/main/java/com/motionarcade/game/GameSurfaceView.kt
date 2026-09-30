@@ -54,7 +54,7 @@ class GameSurfaceView(
     private val sprites = SpriteManager(context)
     private val bg = BackgroundManager(context)
     private val registry = GameRegistry(sprites, bg)
-    private val menu = Menu(bg)
+    private val menu = Menu()
     private val pipeline = VisionPipeline(context, lifecycleOwner)
     private val hud = Hud()
 

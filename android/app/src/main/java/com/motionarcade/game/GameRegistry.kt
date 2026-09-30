@@ -2,12 +2,9 @@ package com.motionarcade.game
 
 import com.motionarcade.game.games.DrumGame
 import com.motionarcade.game.games.FootballGame
-import com.motionarcade.game.games.HoopGame
 import com.motionarcade.game.games.HotpotGame
 import com.motionarcade.game.games.MaskGame
-import com.motionarcade.game.games.MarioGame
 import com.motionarcade.game.games.PandaRollGame
-import com.motionarcade.game.games.SkiGame
 import com.motionarcade.game.games.SliceGame
 import com.motionarcade.game.games.TennisGame
 import com.motionarcade.render.BackgroundManager
@@ -28,19 +25,20 @@ class GameRegistry(
     private val bg: BackgroundManager,
 ) {
 
-    /** 已迁移 10 款：头控 6 款 + 头手分工 1 款 + 手控 3 款（含两款文化动词游戏）。 */
+    /**
+     * 精选 7 款：只保留「交互好 + 四川文化特色鲜明」的双达标作品。
+     * 选品标准：动词来自文化动作本身（变脸=扫脸、鼓点=下砸、火锅=低头捞），
+     * 主题本身就是四川符号（川剧 / 火锅 / 熊猫·三星堆 / 川超川网 / 川果）。
+     */
     private val games: List<BaseGame> by lazy {
         listOf(
-            MarioGame(sprites, bg),
+            MaskGame(sprites),
+            DrumGame(),
+            HotpotGame(sprites, bg),
             FootballGame(sprites),
             TennisGame(sprites),
             PandaRollGame(sprites),
-            HotpotGame(sprites, bg),
-            SkiGame(sprites, bg),
-            MaskGame(sprites),
-            DrumGame(),
             SliceGame(sprites, bg),
-            HoopGame(sprites, bg),
         )
     }
 
@@ -53,9 +51,9 @@ class GameRegistry(
     /** 预热这些游戏会用到的精灵，避免第一次切进去时卡一帧。 */
     fun preload() {
         sprites.preload(
-            listOf("panda_hero", "panda_curl", "coin", "enemy", "basketball",
+            listOf("panda_curl", "sanxingdui", "bronze", "bronze_tree",
                 "fruit", "kiwi", "peach", "watermelon", "loquat", "pepper",
-                "sanxingdui", "bronze", "bronze_tree", "football", "tennis_ball",
+                "football", "tennis_ball",
                 "mask_red", "mask_gold", "mask_green", "mask_black", "mask_blue")
         )
     }

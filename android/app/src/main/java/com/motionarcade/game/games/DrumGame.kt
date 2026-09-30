@@ -252,7 +252,8 @@ class DrumGame : BaseGame() {
 
     override fun draw(d: Canvas2D) {
         // ---- 戏台 ----
-        d.rect(0f, 0f, Design.W, Design.H, Col.rgb(22, 14, 10))
+        d.vGradient(0f, 0f, Design.W, Design.H,
+            Col.rgb(30, 18, 12), Col.rgb(22, 14, 10), Col.rgb(12, 8, 6))
         d.polygon(floatArrayOf(
             DRUM_X - 140f, 0f, DRUM_X + 140f, 0f,
             DRUM_X + 360f, Design.H.toFloat(), DRUM_X - 360f, Design.H.toFloat()
@@ -260,8 +261,12 @@ class DrumGame : BaseGame() {
         for (k in 0 until 6) {
             val x = 120f + k * (Design.W - 240f) / 5f
             d.rect(x - 3f, 0f, 6f, 120f, Col.rgb(90, 50, 30))
-            d.circle(x, 130f, 10f, Col.rgb(255, 190, 100, 160))
+            d.glow(x, 130f, 66f, Col.rgb(255, 190, 100, 60))
+            d.circle(x, 130f, 10f, Col.rgb(255, 200, 120, 190))
         }
+        // 舞台地板
+        d.vGradient(0f, DRUM_Y + 60f, Design.W, Design.H - DRUM_Y - 60f,
+            Col.rgb(56, 34, 24), Col.rgb(24, 14, 10))
 
         // ---- 判定引导线（音符从这里落向鼓面）----
         d.line(DRUM_X - 320f, DRUM_Y - 300f, DRUM_X + 320f, DRUM_Y - 300f,
@@ -311,6 +316,14 @@ class DrumGame : BaseGame() {
                 Col.alpha(Col.rgb(255, 214, 96), (90 + 160 * f).toInt()))
             d.text(if (side == 0) "左" else "右", x, DRUM_Y - 28f, 22f,
                 Col.rgb(60, 40, 20), align = "center", bold = true)
+        }
+
+        // 击打冲击波（左右拳各自扩散一圈）
+        for ((f, side) in listOf(drumFlashL to -1f, drumFlashR to 1f)) {
+            if (f > 0.02f) {
+                d.circle(DRUM_X + side * 300f, DRUM_Y - 30f,
+                    20f + (1f - f) * 130f, Col.alpha(Col.rgb(255, 214, 96), (150 * f).toInt()), 4f)
+            }
         }
 
         particles.draw(d)

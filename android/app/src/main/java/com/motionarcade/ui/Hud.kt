@@ -71,7 +71,7 @@ class Hud {
 
     // ---- 左：标题 ----
     private fun drawTitle(d: Canvas2D, game: BaseGame) {
-        d.text(game.title, 42f, 34f, 36f, PAPER, bold = true)
+        d.shadowText(game.title, 42f, 34f, 36f, PAPER, offset = 3f, bold = true)
         if (game.sub.isNotEmpty()) {
             d.text(game.sub, 46f, 80f, 22f, PAPER_DIM, bold = true)
         }

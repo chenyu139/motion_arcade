@@ -41,14 +41,13 @@ dl "$MODELS_URL/face_landmarker/face_landmarker/float16/1/face_landmarker.task" 
 #   · 单个精灵最大也就显示 200px 左右，统一压到 512（原图 1024）；
 #   · 缺图时代码会自动回退到矢量画法，不会崩。
 # **移植新游戏时**：把新游戏用到的精灵名加进 SPRITES，再重跑本脚本。
-# 当前归属：mario(panda_hero/panda_curl/coin/enemy) panda_roll(sanxingdui/
-# bronze/bronze_tree) slice(fruit 六件) hoop(basketball) football(football)
-# tennis(tennis_ball) mask(mask 五张)；hotpot/ski/drum 纯程序绘制，无精灵。
+# 当前归属：panda_roll(panda_curl/sanxingdui/bronze/bronze_tree)
+# slice(fruit 六件) football(football) tennis(tennis_ball) mask(mask 五张)；
+# hotpot/drum 纯程序绘制，无精灵。
 SPRITES=(
-    panda_hero panda_curl coin enemy
-    sanxingdui bronze bronze_tree
+    panda_curl sanxingdui bronze bronze_tree
     fruit kiwi peach watermelon loquat pepper
-    basketball football tennis_ball
+    football tennis_ball
     mask_red mask_gold mask_green mask_black mask_blue
 )
 echo "==> 复制并降采样精灵（原图 1024 → 512，白名单 ${#SPRITES[@]} 张）"
@@ -74,7 +73,7 @@ fi
 # 同样白名单制：menu(bg_bev_mist) mario(bg_bev_game) ski(bg_bev_mountain)
 # hotpot 菜馆内景(sky_teahouse)。其余素材池背景等对应游戏移植时再加。
 # bevouliin 视差背景 3072×1536 → 1920 宽；程序绘制天空 1536×1024 → 1280 宽。
-BGS=(bg_bev_mist bg_bev_game bg_bev_mountain sky_teahouse)
+BGS=(bg_bev_mist sky_teahouse)
 echo "==> 复制并降采样背景（白名单 ${#BGS[@]} 张）"
 if [ -d "$SRC_ASSETS/bg" ]; then
     for name in "${BGS[@]}"; do

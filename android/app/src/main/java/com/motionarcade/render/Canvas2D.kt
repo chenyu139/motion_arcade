@@ -2,9 +2,12 @@ package com.motionarcade.render
 
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 
 /**
@@ -25,6 +28,17 @@ object Col {
         val g = (Color.green(color) * k).toInt().coerceIn(0, 255)
         val b = (Color.blue(color) * k).toInt().coerceIn(0, 255)
         return rgb(r, g, b, a)
+    }
+
+    /** 两色插值（卡面染色等）。 */
+    fun mix(a: Int, b: Int, t: Float): Int {
+        val k = t.coerceIn(0f, 1f)
+        return rgb(
+            (Color.red(a) + (Color.red(b) - Color.red(a)) * k).toInt(),
+            (Color.green(a) + (Color.green(b) - Color.green(a)) * k).toInt(),
+            (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * k).toInt(),
+            (Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * k).toInt()
+        )
     }
 
     /** 仅替换 alpha 通道。 */
@@ -61,6 +75,49 @@ class Canvas2D(private val canvas: Canvas) {
     }
     private val tmpRect = RectF()
     private val tmpPath = Path()
+
+    // ------------------------------------------------------------------ 质感图元
+    //
+    // 渐变/光晕会让 Paint 每次挂一个新的 Shader——单帧十几次的小对象分配
+    // 是可接受的（远低于粒子系统的量级），换来的是"商业级"的画面层次。
+    // 约束：不要在每帧几十次的循环里调用它们。
+
+    /** 垂直三段渐变矩形（天空、卡面、地面带）。 */
+    fun vGradient(x: Float, y: Float, w: Float, h: Float,
+                  top: Int, mid: Int, bottom: Int) {
+        fill.shader = LinearGradient(0f, y, 0f, y + h,
+            intArrayOf(top, mid, bottom),
+            floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+        tmpRect.set(x, y, x + w, y + h)
+        canvas.drawRect(tmpRect, fill)
+        fill.shader = null
+    }
+
+    /** 两段垂直渐变矩形。 */
+    fun vGradient(x: Float, y: Float, w: Float, h: Float, top: Int, bottom: Int) {
+        fill.shader = LinearGradient(0f, y, 0f, y + h, top, bottom, Shader.TileMode.CLAMP)
+        tmpRect.set(x, y, x + w, y + h)
+        canvas.drawRect(tmpRect, fill)
+        fill.shader = null
+    }
+
+    /** 径向光晕（灯光/落日/选中辉光）：中心 color → 边缘同色透明。 */
+    fun glow(cx: Float, cy: Float, r: Float, color: Int) {
+        if (r <= 0f) return
+        fill.shader = RadialGradient(cx, cy, r,
+            intArrayOf(color, Col.alpha(color, 0)),
+            floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+        canvas.drawCircle(cx, cy, r, fill)
+        fill.shader = null
+    }
+
+    /** 带投影的文字（标题/大数字用；offset 为投影偏移）。 */
+    fun shadowText(str: String, x: Float, y: Float, size: Float, color: Int,
+                   shadowColor: Int = Col.rgb(8, 8, 16, 200), offset: Float = 3f,
+                   align: String = "left", bold: Boolean = false) {
+        text(str, x + offset, y + offset, size, shadowColor, align = align, bold = bold)
+        text(str, x, y, size, color, align = align, bold = bold)
+    }
 
     // ------------------------------------------------------------------ 基本图元
 

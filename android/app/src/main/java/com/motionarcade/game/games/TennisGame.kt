@@ -56,6 +56,9 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
     private var incoming = false       // true = 球朝玩家飞来
     private var lastMsg = ""
 
+    // 球拖尾（最近 9 个位置，渐隐）
+    private val trail = ArrayList<Pair<Float, Float>>(9)
+
     override val score: Int get() = scoreMe * 100 + rally * 10
 
     override fun reset() {
@@ -76,6 +79,7 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
         ballVy = 420f
         ballLive = true
         incoming = true
+        trail.clear()
     }
 
     override fun update(dt: Float, inp: GameInput) {
@@ -101,6 +105,8 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
             ballVy += 1450f * dt
             ballX += ballVx * dt
             ballY += ballVy * dt
+            trail.add(ballX to ballY)
+            if (trail.size > 9) trail.removeAt(0)
 
             // 玩家侧底线：没接到 → 对手得分
             if (incoming && ballY > GROUND) {
@@ -178,7 +184,8 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
 
     override fun draw(d: Canvas2D) {
         // 球场
-        d.rect(0f, 0f, Design.W, Design.H, Col.rgb(30, 62, 92))
+        d.vGradient(0f, 0f, Design.W, Design.H,
+            Col.rgb(22, 48, 74), Col.rgb(30, 62, 92), Col.rgb(44, 92, 130))
         d.rect(0f, NET_TOP, Design.W, GROUND - NET_TOP + 60f, Col.rgb(38, 96, 140))
         // 底线白线
         d.line(180f, GROUND, Design.W - 180f, GROUND, Col.rgb(240, 244, 250, 200), 6f)
@@ -207,8 +214,13 @@ class TennisGame(private val sprites: SpriteManager) : BaseGame() {
         d.ellipse(rx, ry, 30f, 40f, Col.rgb(24, 30, 46))
         d.ellipse(rx, ry, 24f, 34f, Col.rgb(60, 200, 236))
 
-        // 球
+        // 球（拖尾渐隐）
         if (ballLive) {
+            for ((ti, p) in trail.withIndex()) {
+                val t = (ti + 1f) / trail.size
+                d.circle(p.first, p.second, 7f + 8f * t,
+                    Col.alpha(Col.rgb(214, 236, 96), (70 * t).toInt()))
+            }
             if (!sprites.draw(d, "tennis_ball", ballX, ballY, 40f)) {
                 d.circle(ballX, ballY, 20f, Col.rgb(214, 236, 96))
                 d.circle(ballX, ballY, 20f, Col.rgb(180, 200, 60), 3f)

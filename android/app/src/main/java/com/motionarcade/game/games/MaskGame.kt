@@ -147,6 +147,7 @@ class MaskGame(private val sprites: SpriteManager) : BaseGame() {
             FACE_X + 320f, Design.H.toFloat(), FACE_X - 320f, Design.H.toFloat()
         ), Col.rgb(255, 232, 190, 26))
         for (lx in floatArrayOf(140f, Design.W - 140f)) {
+            d.glow(lx, 170f, 110f, Col.rgb(255, 120, 70, 70))
             drawLantern(d, lx, 170f)
         }
 
@@ -158,6 +159,15 @@ class MaskGame(private val sprites: SpriteManager) : BaseGame() {
         // ---- 当前脸谱（切换时做一个"压缩-弹开"）----
         val pop = if (swapT > 0f) 1f + 0.18f * sin(swapT / SWAP_T * Math.PI.toFloat()) else 1f
         val h = FACE_H * pop
+        // 变脸瞬间的横扫速度线（"一抹"的动感）
+        if (swapT > 0f) {
+            val a = (swapT / SWAP_T * 170f).toInt()
+            for (k in 0 until 3) {
+                val y = FACE_Y - 110f + k * 110f
+                d.line(FACE_X - 330f + k * 26f, y, FACE_X + 330f - k * 26f, y,
+                    Col.rgb(255, 240, 210, a), 5f - k)
+            }
+        }
         val drawn = sprites.draw(d, FACES[cur], FACE_X, FACE_Y, h)
         if (!drawn) drawFallbackFace(d, FACE_X, FACE_Y, h, cur)
 

@@ -160,6 +160,23 @@ class FootballGame(private val sprites: SpriteManager) : BaseGame() {
         }
         d.rect(0f, 300f, Design.W, 6f, Col.rgb(240, 244, 250, 160))
 
+        // 看台剪影 + 人头攒动 + 泛光灯（球场氛围）
+        d.vGradient(0f, Design.TOP, Design.W, 188f,
+            Col.rgb(16, 22, 38), Col.rgb(28, 34, 52))
+        for (row in 0..2) {
+            val y = 152f + row * 44f
+            val shift = if (row % 2 == 0) 0f else 26f
+            for (k in 0..37) {
+                val x = 40f + k * 50f + shift
+                val shade = Col.rgb(96 + (k * 13) % 40, 104 + (k * 7) % 36, 130 + (k * 11) % 40)
+                d.circle(x, y, 9f, Col.alpha(shade, 170))
+            }
+        }
+        d.glow(210f, 120f, 150f, Col.rgb(220, 235, 255, 70))
+        d.glow(Design.W - 210f, 120f, 150f, Col.rgb(220, 235, 255, 70))
+        d.circle(210f, 120f, 22f, Col.rgb(235, 244, 255))
+        d.circle(Design.W - 210f, 120f, 22f, Col.rgb(235, 244, 255))
+
         // 球门（透视：上窄下宽）
         val topL = GOAL_L + 40f
         val topR = GOAL_R - 40f

@@ -244,6 +244,19 @@ class PandaRollGame(private val sprites: SpriteManager) : BaseGame() {
             d.circle(bx, by - size * 0.4f - jumpH, size * 0.45f, Col.rgb(60, 56, 66), 4f)
         }
 
+        // 高速时的边缘速度线（越快越密的"风"）
+        val sv = (speed - 0.55f).coerceAtMost(0.3f)
+        if (sv > 0f) {
+            val a = (sv / 0.3f * 120f).toInt()
+            for (k in 0 until 4) {
+                val flick = (roll * 17f + k * 97f) % 90f
+                val y = 300f + k * 170f + flick
+                d.line(90f, y, 290f, y, Col.rgb(255, 255, 255, a), 3f)
+                d.line(Design.W - 290f, y + 85f, Design.W - 90f, y + 85f,
+                    Col.rgb(255, 255, 255, a), 3f)
+            }
+        }
+
         particles.draw(d)
     }
 

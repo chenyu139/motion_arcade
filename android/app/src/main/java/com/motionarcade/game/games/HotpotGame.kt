@@ -176,6 +176,9 @@ class HotpotGame(
         bg.drawOr(d, "sky_teahouse", Design.W, Design.H,
             Col.rgb(52, 26, 24), Col.rgb(96, 44, 36), Col.rgb(34, 18, 16))
 
+        // 锅体暖光垫底（让"红油锅"成为画面焦点）
+        d.glow(POT_CX, POT_CY - 20f, POT_RX * 1.7f, Col.rgb(255, 170, 90, 55))
+
         // 锅
         d.ellipse(POT_CX, POT_CY, POT_RX, POT_RY, Col.rgb(150, 44, 36))
         d.ellipse(POT_CX, POT_CY, POT_RX - 18f, POT_RY - 14f, Col.rgb(196, 62, 44))
@@ -202,6 +205,18 @@ class HotpotGame(
         val cy = chopY
         for (s in intArrayOf(-1, 1)) {
             d.line(chopX + s * 14f, cy - 260f, chopX + s * 4f, cy, Col.rgb(214, 178, 120), 12f)
+        }
+
+        // 锅沿高光
+        d.arc(POT_CX, POT_CY, POT_RX - 6f, 180f, 180f, Col.rgb(255, 220, 170, 55), 4f)
+
+        // 蒸汽：几缕白汽沿锅面升腾、摆动、渐隐（火锅氛围的核心）
+        for (i in 0 until 7) {
+            val cycle = (t * 0.42f + i * 0.149f) % 1f
+            val sx = POT_CX + (i - 3) * 46f + kotlin.math.sin(cycle * 7f + i * 1.7f) * 16f
+            val sy = POT_CY - 30f - cycle * 330f
+            val a = ((1f - cycle) * (cycle * 5f).coerceAtMost(1f) * 115f).toInt()
+            d.circle(sx, sy, 16f + cycle * 26f, Col.rgb(246, 242, 236, a))
         }
 
         particles.draw(d)
